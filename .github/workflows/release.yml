@@ -2,8 +2,6 @@ name: Android preview release
 
 on:
   push:
-    branches: [main]
-    paths: ['.github/workflows/release.yml']
     tags: ['v*-alpha.*']
 
 permissions:
@@ -13,7 +11,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     env:
-      TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'v0.1.0-alpha.1' }}
+      TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v5
         with:
