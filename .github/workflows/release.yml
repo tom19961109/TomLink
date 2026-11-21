@@ -48,5 +48,5 @@ jobs:
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then exit 0; fi
           gh release create "$TAG" --verify-tag --prerelease --title "TomLink $TAG" \
-            --notes "在 TomLink 內檢查更新，下載後由 Android 確認安裝。alpha.1 與 alpha.2 使用不同簽章，請先匯出步數 JSON 或同步至 TomPet，再移除舊版並安裝此版本。" \
+            --notes "更新 Android App 圖示，將 TomForge 閃電結合鏈環。alpha.3 可以在 App 內檢查更新並覆蓋安裝。" \
             TomLink-Android-preview.apk update.json SHA256SUMS.txt
