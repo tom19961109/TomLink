@@ -48,5 +48,5 @@ jobs:
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then exit 0; fi
           gh release create "$TAG" --verify-tag --prerelease --title "TomLink $TAG" \
-            --notes "新增可離線查看的步數月曆，顯示每日步數與每週合計。可在 TomLink 內檢查更新。" \
+            --notes "簡化 TomLink 啟動圖示，移除中央短斜槓。可在 TomLink 內檢查更新。" \
             TomLink-Android-preview.apk update.json SHA256SUMS.txt

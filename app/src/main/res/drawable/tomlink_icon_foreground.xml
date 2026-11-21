@@ -26,15 +26,4 @@
     <path
         android:pathData="M55.1,31.4 L39.4,56 H44.1 L54.1,37.9 Z"
         android:fillColor="#F9DBAB" />
-
-    <path
-        android:pathData="M47,56.5 L60.4,48.8"
-        android:strokeColor="#344E40"
-        android:strokeWidth="6"
-        android:strokeLineCap="round" />
-    <path
-        android:pathData="M47,56.5 L60.4,48.8"
-        android:strokeColor="#D7E8D3"
-        android:strokeWidth="3.2"
-        android:strokeLineCap="round" />
 </vector>
