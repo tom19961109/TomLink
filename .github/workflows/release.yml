@@ -2,8 +2,9 @@ name: Android preview release
 
 on:
   push:
-    tags:
-      - 'v*-alpha.*'
+    branches: [main]
+    paths: ['.github/workflows/release.yml']
+    tags: ['v*-alpha.*']
 
 permissions:
   contents: write
@@ -11,8 +12,12 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'v0.1.0-alpha.1' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.TAG }}
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -24,8 +29,8 @@ jobs:
       - name: Publish prerelease
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
         run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then exit 0; fi
           cp app/build/outputs/apk/debug/app-debug.apk TomLink-Android-preview.apk
           sha256sum TomLink-Android-preview.apk > SHA256SUMS.txt
           gh release create "$TAG" --verify-tag --prerelease --title "TomLink $TAG" \
