@@ -16,8 +16,18 @@ TomLink 是獨立的開源 Android 活動資料工具。步數保存在裝置的
 - 選「匯出步數 JSON」可在手機本機儲存檔案，也可手動匯入 TomPet。
 - 首次選「同步至 TomPet」會開啟瀏覽器。在瀏覽器使用 Gmail 登入，比對裝置代碼並確認連結。回到 TomLink 再按一次即可上傳。TomPet 只允許同一個 Gmail 帳號讀取這些步數。
 - 同步只會傳送步數欄位；可在 App 解除 Gmail 連結。裝置授權有效期為 14 天。
-- 測試版使用偵錯簽章。如果系統要求重新安裝，請先從舊版匯出 JSON，再把備份匯入 TomPet。
+## 更新
+
+- 從 alpha.3 開始，在 App 點「檢查更新」。有新版時點「更新」，下載完成後在 Android 系統畫面確認安裝。
+- 首次使用 App 內更新時，Android 會要求允許 TomLink 安裝應用程式。
+- alpha.1 和 alpha.2 採用不同簽章，升到 alpha.3 前請先同步至 TomPet 或匯出步數 JSON，再移除舊版並安裝 alpha.3。
 
 ## 建置
 
 使用 JDK 21 與 Android SDK Platform 36。Windows 執行 `./gradlew.bat assembleDebug`，Linux 或 macOS 執行 `bash gradlew assembleDebug`。APK 位於 `app/build/outputs/apk/debug/`。
+
+### 發布測試版
+
+更新 `app/build.gradle` 的版本名稱並遞增版本碼，執行 `assembleRelease`，使用 TomLink 的固定發布金鑰簽署 APK。請將金鑰和密碼保存在 Git 之外。
+
+為簽署後的 `TomLink-Android-preview.apk` 建立 `update.json`，欄位為 `versionCode`（數字）、`versionName` 和 `sha256`（完整 APK 的 SHA-256）。在相同版本的原始碼提交之上建立一筆只含這兩個檔案的提交，將它推送到 `apk-v<versionName>` 標籤，然後推送指向原始碼的 `v<versionName>` 標籤。GitHub Actions 驗證 APK 簽章、版本和雜湊後發布。

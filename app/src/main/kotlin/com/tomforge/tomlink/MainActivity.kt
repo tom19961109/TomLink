@@ -2,6 +2,7 @@ package com.tomforge.tomlink
 
 import android.Manifest
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.Sensor
@@ -9,6 +10,9 @@ import android.hardware.SensorManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
+import android.view.View
+import androidx.core.content.FileProvider
 import android.view.WindowInsets
 import android.widget.Button
 import android.widget.LinearLayout
@@ -17,6 +21,8 @@ import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import java.util.concurrent.Executors
+
+private const val UPDATE_PERMISSION = 4
 
 class MainActivity : Activity() {
     private val settings by lazy { getSharedPreferences(PREFS, MODE_PRIVATE) }
@@ -31,6 +37,12 @@ class MainActivity : Activity() {
     private lateinit var send: Button
     private lateinit var disconnect: Button
     private lateinit var export: Button
+    private val updates by lazy { AppUpdates(applicationContext) }
+    private lateinit var updateStatus: TextView
+    private lateinit var checkUpdate: Button
+    private lateinit var installUpdate: Button
+    private var latest: AppUpdates.Release? = null
+    private var checking = false
     private var email: String? = null
     private var busy = false
 
@@ -50,6 +62,24 @@ class MainActivity : Activity() {
         layout.addView(TextView(this).apply { text = "TomLink"; textSize = 32f })
         layout.addView(TextView(this).apply {
             text = "首次授權後會自動計步，切換 App 或鎖屏時也可記錄。步數先存在此裝置。"
+        })
+        updateStatus = TextView(this).apply { text = "目前版本 ${updates.versionName}" }
+        layout.addView(updateStatus)
+        checkUpdate = Button(this).apply {
+            text = "檢查更新"
+            setOnClickListener {
+                latest = null
+                checkForUpdate()
+            }
+        }
+        installUpdate = Button(this).apply {
+            text = "更新"
+            setOnClickListener { latest?.let { downloadUpdate(it) } }
+        }
+        layout.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(checkUpdate)
+            addView(installUpdate)
         })
         status = TextView(this)
         layout.addView(status)
@@ -155,6 +185,61 @@ class MainActivity : Activity() {
         else renderSteps(StepService.status)
     }
 
+    private fun checkForUpdate() {
+        updateStatus.text = "目前版本 ${updates.versionName}｜檢查中…"
+        runUpdateWork({ updates.check() }) { release ->
+            latest = release
+            updateStatus.text = if (release == null) "目前版本 ${updates.versionName}｜已是最新版"
+                else "目前版本 ${updates.versionName}｜可更新至 ${release.name}"
+        }
+    }
+
+    private fun downloadUpdate(release: AppUpdates.Release) {
+        updateStatus.text = "正在下載 ${release.name}…"
+        runUpdateWork({ updates.download(release) }) {
+            updateStatus.text = "已下載 ${release.name}"
+            if (packageManager.canRequestPackageInstalls()) openInstaller()
+            else {
+                try {
+                    startActivityForResult(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:$packageName")), UPDATE_PERMISSION)
+                } catch (_: ActivityNotFoundException) {
+                    notifyUser("請在系統設定允許 TomLink 安裝應用程式")
+                }
+            }
+        }
+    }
+
+    private fun openInstaller() {
+        try {
+            updates.validateApk()
+            StepService.flushPending?.invoke()
+            val uri = FileProvider.getUriForFile(this, "$packageName.updates", updates.apk)
+            startActivity(Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            })
+        } catch (error: Exception) {
+            notifyUser(error.message ?: "無法開啟安裝畫面")
+        }
+    }
+
+    private fun <T> runUpdateWork(work: () -> T, complete: (T) -> Unit) {
+        checking = true
+        renderSync()
+        worker.execute {
+            val result = runCatching(work)
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                checking = false
+                result.onSuccess(complete).onFailure {
+                    updateStatus.text = "目前版本 ${updates.versionName}｜${it.message ?: "更新失敗"}"
+                }
+                renderSync()
+            }
+        }
+    }
+
     private fun sendSteps() {
         StepService.flushPending?.invoke()
         runWork({
@@ -190,6 +275,9 @@ class MainActivity : Activity() {
         account.text = email?.let { "同步帳號：$it" }
             ?: sync.code?.let { "回到瀏覽器確認裝置代碼 $it" }
             ?: "請用和 TomPet 相同的 Gmail 登入。"
+        checkUpdate.isEnabled = !checking
+        installUpdate.isEnabled = !checking
+        installUpdate.visibility = if (latest != null) View.VISIBLE else View.GONE
         send.isEnabled = !busy
         export.isEnabled = !busy
         disconnect.isEnabled = !busy && sync.hasDevice
@@ -215,6 +303,11 @@ class MainActivity : Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == UPDATE_PERMISSION) {
+            if (packageManager.canRequestPackageInstalls()) openInstaller()
+            else notifyUser("允許 TomLink 安裝應用程式後即可更新")
+            return
+        }
         if (requestCode != 2 || resultCode != RESULT_OK) return
         val uri = data?.data ?: return
         StepService.flushPending?.invoke()
@@ -233,3 +326,4 @@ class MainActivity : Activity() {
 
     private fun notifyUser(message: String) = Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
 }
+

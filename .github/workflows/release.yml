@@ -12,28 +12,36 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TAG: ${{ github.ref_name }}
+      CERT_SHA256: 05877b12205ab6824875b5e8ed864dbaa0746a99855fcaa7cce37b3d19f21738
     steps:
       - uses: actions/checkout@v5
-        with:
-          ref: refs/tags/${{ env.TAG }}
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '21'
       - uses: android-actions/setup-android@v4
         with:
           packages: ''
-      - name: Install Android SDK
-        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
-      - name: Build preview APK
-        run: bash gradlew assembleDebug --console=plain
+      - name: Verify signed release assets
+        shell: bash
+        run: |
+          sdkmanager 'build-tools;36.0.0'
+          tools="$ANDROID_HOME/build-tools/36.0.0"
+          git fetch origin "refs/tags/apk-$TAG"
+          test "$(git rev-parse FETCH_HEAD^)" = "$(git rev-parse HEAD)"
+          git show FETCH_HEAD:TomLink-Android-preview.apk > TomLink-Android-preview.apk
+          git show FETCH_HEAD:update.json > update.json
+          certs="$("$tools/apksigner" verify --print-certs TomLink-Android-preview.apk)"
+          test "$(sed -n 's/^Signer #[0-9]* certificate SHA-256 digest: //p' <<< "$certs")" = "$CERT_SHA256"
+          sha256sum TomLink-Android-preview.apk > SHA256SUMS.txt
+          test "$(jq -r .sha256 update.json)" = "$(cut -d ' ' -f 1 SHA256SUMS.txt)"
+          version="$(jq -r .versionName update.json)"
+          version_code="$(jq -r .versionCode update.json)"
+          [[ "$version_code" =~ ^[1-9][0-9]*$ ]]
+          test "v$version" = "$TAG"
+          "$tools/aapt" dump badging TomLink-Android-preview.apk > apk-badging.txt
+          grep -F "package: name='com.tomforge.tomlink' versionCode='$version_code' versionName='$version'" apk-badging.txt
       - name: Publish prerelease
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then exit 0; fi
-          cp app/build/outputs/apk/debug/app-debug.apk TomLink-Android-preview.apk
-          sha256sum TomLink-Android-preview.apk > SHA256SUMS.txt
           gh release create "$TAG" --verify-tag --prerelease --title "TomLink $TAG" \
-            --notes "Android 8.0+ preview with background counting, optional step detector, and Gmail-authorized TomPet sync. JSON export is available offline. This APK is debug signed. Export your data from an earlier preview before replacing it if Android requires a reinstall." \
-            TomLink-Android-preview.apk SHA256SUMS.txt
+            --notes "在 TomLink 內檢查更新，下載後由 Android 確認安裝。alpha.1 與 alpha.2 使用不同簽章，請先匯出步數 JSON 或同步至 TomPet，再移除舊版並安裝此版本。" \
+            TomLink-Android-preview.apk update.json SHA256SUMS.txt
