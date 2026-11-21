@@ -35,5 +35,5 @@ jobs:
           cp app/build/outputs/apk/debug/app-debug.apk TomLink-Android-preview.apk
           sha256sum TomLink-Android-preview.apk > SHA256SUMS.txt
           gh release create "$TAG" --verify-tag --prerelease --title "TomLink $TAG" \
-            --notes "Android 8.0+ preview. Foreground step counter with local SQLite storage and JSON export. Requires a device with a step counter. This APK is debug signed. Future versions may require uninstalling this preview, so export your data first." \
+            --notes "Android 8.0+ preview with background counting, optional step detector, and Gmail-authorized TomPet sync. JSON export is available offline. This APK is debug signed. Export your data from an earlier preview before replacing it if Android requires a reinstall." \
             TomLink-Android-preview.apk SHA256SUMS.txt

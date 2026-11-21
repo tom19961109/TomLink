@@ -5,66 +5,76 @@ import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.SystemClock
 import android.view.WindowInsets
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
-import org.json.JSONObject
-import java.time.Instant
-import java.util.UUID
+import java.util.concurrent.Executors
 
-class MainActivity : Activity(), SensorEventListener {
-    private val store by lazy { getSharedPreferences("steps", MODE_PRIVATE) }
-    private val manager by lazy { getSystemService(SensorManager::class.java) }
-    private val sensor by lazy { manager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER) }
+class MainActivity : Activity() {
+    private val settings by lazy { getSharedPreferences(PREFS, MODE_PRIVATE) }
+    private val sync by lazy { TomPetSync(applicationContext) }
+    private val sensors by lazy { getSystemService(SensorManager::class.java) }
+    private val hasCounter by lazy { sensors.getDefaultSensor(Sensor.TYPE_STEP_COUNTER) != null }
+    private val hasDetector by lazy { sensors.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR) != null }
+    private val worker = Executors.newSingleThreadExecutor()
     private lateinit var status: TextView
+    private lateinit var account: TextView
     private lateinit var toggle: Button
+    private lateinit var send: Button
+    private lateinit var disconnect: Button
     private lateinit var export: Button
-    private val records by lazy { StepStore(this) }
-    private var recordCount = 0L
-    private val sourceId by lazy {
-        store.getString("sourceId", null) ?: ("android-step-counter:" + UUID.randomUUID()).also {
-            store.edit().putString("sourceId", it).commit()
-        }
-    }
-    private var listening = false
-    private var previousCount = 0L
-    private var previousTime = 0L
-    private var startedAt = 0L
-    private var sessionSteps = 0L
+    private var email: String? = null
+    private var busy = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            val pad = (24 * resources.displayMetrics.density).toInt()
-            setOnApplyWindowInsetsListener { view, insets ->
-                if (Build.VERSION.SDK_INT >= 30) {
-                    val bars = insets.getInsets(WindowInsets.Type.systemBars())
-                    view.setPadding(pad + bars.left, pad + bars.top, pad + bars.right, pad + bars.bottom)
-                } else {
-                    view.setPadding(pad, pad, pad, pad)
-                }
-                insets
+        val scroll = ScrollView(this)
+        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val pad = (24 * resources.displayMetrics.density).toInt()
+        layout.setPadding(pad, pad, pad, pad)
+        scroll.setOnApplyWindowInsetsListener { _, insets ->
+            if (Build.VERSION.SDK_INT >= 30) {
+                val bars = insets.getInsets(WindowInsets.Type.systemBars())
+                layout.setPadding(pad + bars.left, pad + bars.top, pad + bars.right, pad + bars.bottom)
             }
+            insets
         }
         layout.addView(TextView(this).apply { text = "TomLink"; textSize = 32f })
         layout.addView(TextView(this).apply {
-            text = "在畫面開啟時記錄步數。離開畫面或鎖定手機會結束本次計步。紀錄存在此裝置，可自行匯出。"
+            text = "首次授權後會自動計步，切換 App 或鎖屏時也可記錄。步數先存在此裝置。"
         })
         status = TextView(this)
         layout.addView(status)
         toggle = Button(this).apply {
-            setOnClickListener { if (listening) stopCounting() else requestCounting() }
+            setOnClickListener {
+                if (StepService.status.running) {
+                    settings.edit().putBoolean(ENABLED, false).apply()
+                    stopService(Intent(this@MainActivity, StepService::class.java))
+                } else {
+                    settings.edit().putBoolean(ENABLED, true).apply()
+                    startCounting(true)
+                }
+            }
         }
         layout.addView(toggle)
+        layout.addView(Switch(this).apply {
+            text = "即時步數偵測"
+            isEnabled = hasCounter && hasDetector
+            isChecked = hasDetector && (!hasCounter || settings.getBoolean(FAST, false))
+            setOnCheckedChangeListener { _, checked ->
+                settings.edit().putBoolean(FAST, checked).apply()
+                if (StepService.status.running) startCounting(false)
+            }
+        })
+        layout.addView(TextView(this).apply { text = "平常使用系統計步；想即時看步數時可開啟逐步偵測。" })
         export = Button(this).apply {
             text = "匯出步數 JSON"
             setOnClickListener {
@@ -76,103 +86,149 @@ class MainActivity : Activity(), SensorEventListener {
             }
         }
         layout.addView(export)
-        recordCount = records.count()
-        setContentView(layout)
-        render()
+        account = TextView(this)
+        layout.addView(account)
+        send = Button(this).apply {
+            text = "同步至 TomPet"
+            setOnClickListener { sendSteps() }
+        }
+        layout.addView(send)
+        disconnect = Button(this).apply {
+            text = "解除 Gmail 連結"
+            setOnClickListener {
+                runWork({ sync.disconnect() }) {
+                    email = null
+                    notifyUser("已解除 Gmail 連結")
+                }
+            }
+        }
+        layout.addView(disconnect)
+        scroll.addView(layout)
+        setContentView(scroll)
+        renderSteps(StepService.status)
+        renderSync()
     }
 
-    private fun requestCounting() {
-        if (Build.VERSION.SDK_INT >= 29 &&
-            checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) != PackageManager.PERMISSION_GRANTED
-        ) {
-            requestPermissions(arrayOf(Manifest.permission.ACTIVITY_RECOGNITION), 1)
+    override fun onResume() {
+        super.onResume()
+        StepService.listener = ::renderSteps
+        renderSteps(StepService.status)
+        if (settings.getBoolean(ENABLED, true) && !StepService.status.running && StepService.status.error == null) {
+            startCounting(!settings.getBoolean("askedMotion", false))
+        }
+        if (sync.hasDevice && !busy) runWork({ sync.email() }) { email = it }
+    }
+
+    override fun onPause() {
+        StepService.listener = null
+        super.onPause()
+    }
+
+    private fun startCounting(askPermission: Boolean) {
+        if (!hasCounter && !hasDetector) return
+        if (!hasMotionPermission(this)) {
+            if (askPermission && Build.VERSION.SDK_INT >= 29) {
+                settings.edit().putBoolean("askedMotion", true).apply()
+                requestPermissions(arrayOf(Manifest.permission.ACTIVITY_RECOGNITION), 1)
+            }
             return
         }
-        val counter = sensor ?: return
-        previousTime = 0
-        sessionSteps = 0
-        startedAt = SystemClock.elapsedRealtimeNanos()
-        listening = manager.registerListener(this, counter, SensorManager.SENSOR_DELAY_NORMAL)
-        if (!listening) notifyUser("無法啟動計步感測器")
-        render()
+        try {
+            startForegroundService(Intent(this, StepService::class.java))
+            if (Build.VERSION.SDK_INT >= 33 && !settings.getBoolean("askedNotifications", false)) {
+                settings.edit().putBoolean("askedNotifications", true).apply()
+                if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                    requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 3)
+                }
+            }
+        } catch (_: IllegalStateException) {
+            notifyUser("請回到 TomLink 開始計步")
+        } catch (_: SecurityException) {
+            notifyUser("請允許身體活動權限")
+        }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, results: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, results)
         if (requestCode != 1) return
-        if (results.firstOrNull() == PackageManager.PERMISSION_GRANTED) requestCounting()
-        else notifyUser("需要身體活動權限才能計步")
+        if (results.firstOrNull() == PackageManager.PERMISSION_GRANTED) startCounting(false)
+        else renderSteps(StepService.status)
     }
 
-    override fun onSensorChanged(event: SensorEvent) {
-        if (!listening || event.timestamp < startedAt) return
-        val count = event.values[0].toLong()
-        val now = System.currentTimeMillis()
-        val time = now - (SystemClock.elapsedRealtimeNanos() - event.timestamp) / 1_000_000
-        val delta = count - previousCount
-        if (previousTime > 0 && time > previousTime && delta > 0) {
-            val record = JSONObject()
-                .put("schemaVersion", "1.0")
-                .put("recordId", UUID.randomUUID().toString())
-                .put("sourceId", sourceId)
-                .put("type", "steps")
-                .put("measurementKind", "interval-total")
-                .put("value", delta)
-                .put("unit", "count")
-                .put("startTime", Instant.ofEpochMilli(previousTime).toString())
-                .put("endTime", Instant.ofEpochMilli(time).toString())
-                .put("recordedAt", Instant.ofEpochMilli(now).toString())
-                .put("quality", "observed")
-            try {
-                records.append(record)
-                recordCount++
-            } catch (_: android.database.SQLException) {
-                stopCounting()
-                notifyUser("無法儲存紀錄，已停止計步")
-                return
+    private fun sendSteps() {
+        StepService.flushPending?.invoke()
+        runWork({
+            val address = sync.email()
+            if (address == null) Pair(null, sync.pair())
+            else Pair(address, StepStore(applicationContext).use { sync.upload(it, address) }.toString())
+        }) { (address, result) ->
+            email = address
+            if (address == null) {
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(result)))
+                } catch (_: android.content.ActivityNotFoundException) {
+                    notifyUser("請安裝瀏覽器後再連結 Gmail")
+                }
             }
-            sessionSteps += delta
+            else notifyUser(if (result == "0") "目前沒有新的步數" else "已同步 $result 筆步數至 TomPet")
         }
-        previousCount = count
-        previousTime = time
-        render()
     }
 
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
-
-    override fun onPause() {
-        stopCounting()
-        super.onPause()
-    }
-
-    private fun stopCounting() {
-        manager.unregisterListener(this)
-        listening = false
-        render()
-    }
-
-    private fun render() {
+    private fun renderSteps(state: StepService.Status) {
         status.text = when {
-            sensor == null -> "此裝置沒有計步感測器。"
-            listening && previousTime == 0L -> "等待第一筆感測器資料…"
-            else -> "本次計步：${sessionSteps} 步｜已儲存 ${recordCount} 筆區間"
+            !hasCounter && !hasDetector -> "此裝置沒有系統計步感測器。"
+            !hasMotionPermission(this) -> "需要身體活動權限才能計步。"
+            state.error != null -> state.error
+            state.running -> "背景計步中｜本次 ${state.steps} 步"
+            else -> "計步已暫停｜本次 ${state.steps} 步"
         }
-        toggle.isEnabled = sensor != null
-        toggle.text = if (listening) "停止計步" else "開始計步"
-        export.isEnabled = !listening && recordCount > 0
+        toggle.isEnabled = hasCounter || hasDetector
+        toggle.text = if (state.running) "暫停計步" else "開始計步"
+    }
+
+    private fun renderSync() {
+        account.text = email?.let { "同步帳號：$it" }
+            ?: sync.code?.let { "回到瀏覽器確認裝置代碼 $it" }
+            ?: "請用和 TomPet 相同的 Gmail 登入。"
+        send.isEnabled = !busy
+        export.isEnabled = !busy
+        disconnect.isEnabled = !busy && sync.hasDevice
+    }
+
+    private fun <T> runWork(work: () -> T, complete: (T) -> Unit) {
+        if (busy) return
+        busy = true
+        renderSync()
+        worker.execute {
+            val result = runCatching(work)
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                busy = false
+                result.onSuccess(complete).onFailure {
+                    if (!sync.hasDevice) email = null
+                    notifyUser(it.message ?: "操作失敗，請稍後再試")
+                }
+                renderSync()
+            }
+        }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != 2 || resultCode != RESULT_OK) return
         val uri = data?.data ?: return
-        try {
+        StepService.flushPending?.invoke()
+        runWork({
             val stream = checkNotNull(contentResolver.openOutputStream(uri, "wt"))
-            stream.bufferedWriter().use { it.write(records.export().toString()) }
-            notifyUser("已匯出步數")
-        } catch (_: Exception) {
-            notifyUser("無法匯出步數")
-        }
+            stream.bufferedWriter(Charsets.UTF_8).use { writer ->
+                StepStore(applicationContext).use { store -> writer.write(store.export().toString()) }
+            }
+        }) { notifyUser("已匯出步數") }
+    }
+
+    override fun onDestroy() {
+        worker.shutdown()
+        super.onDestroy()
     }
 
     private fun notifyUser(message: String) = Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
