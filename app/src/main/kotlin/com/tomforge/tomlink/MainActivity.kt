@@ -83,6 +83,12 @@ class MainActivity : Activity() {
         })
         status = TextView(this)
         layout.addView(status)
+        layout.addView(Button(this).apply {
+            text = "步數月曆"
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity, StepCalendarActivity::class.java))
+            }
+        })
         toggle = Button(this).apply {
             setOnClickListener {
                 if (StepService.status.running) {
