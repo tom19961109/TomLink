@@ -1,0 +1,12 @@
+plugins { id 'com.android.application' version '9.3.3' }
+android {
+    namespace 'com.tomforge.tomlink'
+    compileSdk 36
+    defaultConfig {
+        applicationId 'com.tomforge.tomlink'
+        minSdk 26
+        targetSdk 36
+        versionCode 1
+        versionName '0.1.0'
+    }
+}
