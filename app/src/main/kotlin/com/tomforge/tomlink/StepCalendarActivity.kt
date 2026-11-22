@@ -1,6 +1,7 @@
 package com.tomforge.tomlink
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -8,10 +9,13 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.InputType
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.View
 import android.view.WindowInsets
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -25,6 +29,13 @@ class StepCalendarActivity : Activity() {
     private val worker = Executors.newSingleThreadExecutor()
     private val handler = Handler(Looper.getMainLooper())
     private val number = NumberFormat.getIntegerInstance()
+    private val distance = NumberFormat.getNumberInstance().apply { maximumFractionDigits = 1 }
+    private val transportSettings by lazy { getSharedPreferences("transport", MODE_PRIVATE) }
+    private val speeds get() = TravelSpeeds(
+        transportSettings.getInt("vehicleKph", 30),
+        transportSettings.getInt("bicycleKph", 15),
+    )
+    private lateinit var speedLabel: TextView
     private var month = YearMonth.now()
     private var requestId = 0
     private var loading = false
@@ -73,6 +84,16 @@ class StepCalendarActivity : Activity() {
             addView(summary("本週總步數", weekCount), weighted())
         })
 
+        speedLabel = label("", 13)
+        page.addView(row().apply {
+            gravity = Gravity.CENTER_VERTICAL
+            addView(speedLabel, weighted())
+            addView(Button(this@StepCalendarActivity).apply {
+                text = "設定估算時速"
+                setOnClickListener { editTravelSpeeds() }
+            })
+        })
+        showTravelSpeeds()
         monthLabel = label("", 18, true).apply { gravity = Gravity.CENTER }
         nextMonth = monthButton("›", "下個月") { changeMonth(1) }
         page.addView(row().apply {
@@ -87,7 +108,7 @@ class StepCalendarActivity : Activity() {
         page.addView(calendar)
         status = label("", 13).apply { setPadding(dp(4), dp(8), dp(4), 0) }
         page.addView(status)
-        page.addView(label("每日以步數和交通移動時間顯示，依手機時區統計。", 13).apply {
+        page.addView(label("距離為移動時間乘以估算時速，未使用 GPS。點日期可看搭車與騎單車的明細。", 13).apply {
             setPadding(dp(4), dp(10), dp(4), 0)
         })
         setContentView(scroll)
@@ -122,7 +143,7 @@ class StepCalendarActivity : Activity() {
     private data class Snapshot(
         val days: List<LocalDate>,
         val totals: Map<LocalDate, Long>,
-        val transport: Map<LocalDate, Long>,
+        val transport: Map<LocalDate, TravelDuration>,
         val today: Long,
         val week: Long,
     )
@@ -185,28 +206,93 @@ class StepCalendarActivity : Activity() {
             calendar.addView(row().apply {
                 for (day in week) {
                     val count = snapshot.totals.getValue(day)
-                    addView(dayCell(day, count, snapshot.transport[day] ?: 0, YearMonth.from(day) == selected, day == today), cellParams())
+                    addView(dayCell(day, count, snapshot.transport[day] ?: TravelDuration(), YearMonth.from(day) == selected, day == today), cellParams())
                 }
                 val total = week.sumOf { snapshot.totals.getValue(it) }
+                val km = week.sumOf { speeds.kilometers(snapshot.transport[it] ?: TravelDuration()) }
                 addView(cell("合計", number.format(total), GREEN_TINT, INK).apply {
                     contentDescription = "${week.first()} 至 ${week.last()}，共 ${number.format(total)} 步"
+                    if (km > 0) addView(label(formatDistance(km), 10, false).apply { gravity = Gravity.CENTER })
                 }, cellParams(1.35f))
             })
         }
     }
 
-    private fun dayCell(day: LocalDate, count: Long, transport: Long, inMonth: Boolean, isToday: Boolean) =
+    private fun dayCell(day: LocalDate, count: Long, transport: TravelDuration, inMonth: Boolean, isToday: Boolean) =
         cell(day.dayOfMonth.toString(), if (count > 0 || isToday) number.format(count) else "—",
             if (isToday) GREEN_TINT else if (inMonth) PAPER else MUTED_PAPER,
             if (inMonth || isToday) INK else MUTED_INK).apply {
             contentDescription = "${day.monthValue} 月 ${day.dayOfMonth} 日，${number.format(count)} 步"
-            if (transport > 0) {
-                val duration = if (transport >= 60_000) "${transport / 60_000} 分" else "<1 分"
+            if (transport.totalMs > 0) {
+                val duration = formatDuration(transport.totalMs)
+                val km = formatDistance(speeds.kilometers(transport))
                 addView(label(duration, 10, false).apply { gravity = Gravity.CENTER })
-                contentDescription = "$contentDescription，交通移動 $duration"
+                addView(label(km, 10, false).apply { gravity = Gravity.CENTER })
+                contentDescription = "$contentDescription，交通移動 $duration，$km"
+                setOnClickListener { showTravelDetails(day, transport) }
             }
             isSelected = isToday
         }
+
+    private fun formatDuration(ms: Long) = if (ms >= 60_000) "${ms / 60_000} 分" else "<1 分"
+
+    private fun formatDistance(km: Double): String =
+        if (km in 0.0..<0.05) "<0.1 km" else "約 ${distance.format(km)} km"
+
+    private fun showTravelSpeeds() {
+        val current = speeds
+        speedLabel.text = "搭車 ${current.vehicleKph} km/h · 單車 ${current.bicycleKph} km/h"
+    }
+
+    private fun showTravelDetails(day: LocalDate, travel: TravelDuration) {
+        val current = speeds
+        val details = listOf(
+            Triple("搭車", travel.vehicleMs, current.vehicleKph),
+            Triple("騎單車", travel.bicycleMs, current.bicycleKph),
+        ).filter { it.second > 0 }.joinToString("\n") { (mode, ms, kph) ->
+            "$mode　${formatDuration(ms)} × $kph km/h = ${formatDistance(estimatedKm(ms, kph))}"
+        }
+        AlertDialog.Builder(this).setTitle("$day 交通移動").setMessage(details)
+            .setPositiveButton("關閉", null).show()
+    }
+
+    private fun editTravelSpeeds() {
+        val fields = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(4), dp(24), dp(4))
+        }
+        fun speedField(title: String, value: Int): EditText {
+            val caption = label(title, 14, false)
+            val input = EditText(this).apply {
+                id = View.generateViewId()
+                inputType = InputType.TYPE_CLASS_NUMBER
+                setText(value.toString())
+            }
+            caption.labelFor = input.id
+            fields.addView(caption)
+            fields.addView(input)
+            return input
+        }
+        val current = speeds
+        val vehicle = speedField("搭車（公里／小時）", current.vehicleKph)
+        val bicycle = speedField("騎單車（公里／小時）", current.bicycleKph)
+        val dialog = AlertDialog.Builder(this).setTitle("設定估算時速").setView(fields)
+            .setNegativeButton("取消", null).setPositiveButton("儲存", null).show()
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val vehicleKph = vehicle.text.toString().toIntOrNull()
+            val bicycleKph = bicycle.text.toString().toIntOrNull()
+            if (vehicleKph == null || vehicleKph !in 1..400) {
+                vehicle.error = "請輸入 1 到 400"
+            } else if (bicycleKph == null || bicycleKph !in 1..100) {
+                bicycle.error = "請輸入 1 到 100"
+            } else {
+                transportSettings.edit().putInt("vehicleKph", vehicleKph).putInt("bicycleKph", bicycleKph).apply()
+                showTravelSpeeds()
+                dialog.dismiss()
+                load()
+            }
+        }
+    }
 
     private fun cell(top: String, bottom: String, fill: Int, ink: Int) =
         LinearLayout(this).apply {

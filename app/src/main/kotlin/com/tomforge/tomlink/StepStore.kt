@@ -79,23 +79,27 @@ internal class StepStore(context: Context) : SQLiteOpenHelper(context, "steps.db
         }
     }
 
-    fun transportByDay(from: LocalDate, until: LocalDate, zone: ZoneId): Map<LocalDate, Long> {
+    fun transportByDay(from: LocalDate, until: LocalDate, zone: ZoneId): Map<LocalDate, TravelDuration> {
         val begin = from.atStartOfDay(zone).toInstant().toEpochMilli()
         val end = until.atStartOfDay(zone).toInstant().toEpochMilli()
         return readableDatabase.rawQuery(
-            "SELECT start_ms, end_ms FROM step_records WHERE transport_key IS NOT NULL AND end_ms > ? AND start_ms < ? ORDER BY start_ms",
+            "SELECT start_ms, end_ms, payload FROM step_records WHERE transport_key IS NOT NULL AND end_ms > ? AND start_ms < ? ORDER BY start_ms",
             arrayOf(begin.toString(), end.toString()),
         ).use { rows ->
-            val totals = mutableMapOf<LocalDate, Long>()
+            val totals = mutableMapOf<LocalDate, TravelDuration>()
             var creditedEnd = begin
             while (rows.moveToNext()) {
                 var start = maxOf(creditedEnd, rows.getLong(0))
                 val stop = minOf(end, rows.getLong(1))
+                val bicycle = JSONObject(rows.getString(2)).optString("mode") == "bicycle"
                 while (start < stop) {
                     val day = Instant.ofEpochMilli(start).atZone(zone).toLocalDate()
                     val boundary = day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
                     val next = minOf(stop, boundary)
-                    totals.merge(day, next - start, Long::plus)
+                    val duration = next - start
+                    val total = totals[day] ?: TravelDuration()
+                    totals[day] = if (bicycle) total.copy(bicycleMs = total.bicycleMs + duration)
+                    else total.copy(vehicleMs = total.vehicleMs + duration)
                     start = next
                 }
                 creditedEnd = maxOf(creditedEnd, stop)
