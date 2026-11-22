@@ -5,7 +5,10 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.nio.ByteBuffer
+import java.security.MessageDigest
 import java.security.SecureRandom
+import java.time.LocalDate
 import java.time.ZoneId
 import java.util.UUID
 
@@ -34,7 +37,6 @@ internal class TomPetSync(private val context: Context) {
         val cursor = "daily-after:$email"
         val after = state.getLong(cursor, 0)
         val newest = store.lastId()
-        if (after >= newest) return 0
         val source = state.getString("daily-source", null) ?: UUID.randomUUID().toString().also {
             check(state.edit().putString("daily-source", it).commit()) { "無法儲存同步設定。" }
         }
@@ -47,7 +49,10 @@ internal class TomPetSync(private val context: Context) {
             stepSource?.let { "android-step-detector:$it" },
             transportSource,
         )
-        val days = store.changedDays(after, newest)
+        val today = LocalDate.now(TAIPEI)
+        val changed = store.changedDays(after, newest)
+        val days = (changed + today).sorted()
+        var count = 0
         for (batch in days.chunked(250)) {
             val records = JSONArray()
             val from = batch.first()
@@ -56,22 +61,37 @@ internal class TomPetSync(private val context: Context) {
             val travelByDay = store.transportByDay(from, until, TAIPEI, newest)
             for (day in batch) {
                 val travel = travelByDay[day] ?: TravelDuration()
+                val steps = stepsByDay.getValue(day)
                 records.put(JSONObject()
                     .put("schemaVersion", "1.0")
                     .put("type", "daily")
                     .put("sourceId", source)
+                    .put("uuid", dailyUuid(source, day).toString())
                     .put("date", day.toString())
                     .put("revision", newest)
-                    .put("steps", stepsByDay.getValue(day))
+                    .put("steps", steps)
+                    .put("restoreToday", day == today)
                     .put("bicycleMs", travel.bicycleMs)
                     .put("vehicleMs", travel.vehicleMs)
                     .put("legacySources", JSONArray(legacySources)))
             }
             val uploaded = request("/api/tomlink/sync", "POST", secret, records.toString())
             check(uploaded.getInt("count") == records.length()) { "同步未完成，請再試一次。" }
+            count += records.length()
         }
         state.edit().putLong(cursor, newest).apply()
-        return days.size
+        return count
+    }
+
+    private fun dailyUuid(source: String, day: LocalDate): UUID {
+        val namespace = UUID.fromString(source)
+        val namespaceBytes = ByteBuffer.allocate(16)
+            .putLong(namespace.mostSignificantBits).putLong(namespace.leastSignificantBits).array()
+        val hash = MessageDigest.getInstance("SHA-1").apply { update(namespaceBytes) }
+            .digest(day.toString().toByteArray(Charsets.UTF_8))
+        hash[6] = ((hash[6].toInt() and 0x0f) or 0x50).toByte()
+        hash[8] = ((hash[8].toInt() and 0x3f) or 0x80).toByte()
+        return ByteBuffer.wrap(hash).let { UUID(it.long, it.long) }
     }
 
     fun disconnect() {

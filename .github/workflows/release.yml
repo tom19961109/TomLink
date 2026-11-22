@@ -48,5 +48,5 @@ jobs:
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then exit 0; fi
           gh release create "$TAG" --verify-tag --prerelease --title "TomLink $TAG" \
-            --notes "TomLink 先彙整每天的步數、單車及搭車，再同步到 TomPet。同一天重新同步會更新原紀錄。Gmail 連結後仍可在主畫面查看裝置代碼。" \
+            --notes "手動同步時一律重新傳送今天的活動總計。TomPet 依照每日 UUID 更新或新增紀錄，也能補回從 TomPet 刪除的今日資料。" \
             TomLink-Android-preview.apk update.json SHA256SUMS.txt
