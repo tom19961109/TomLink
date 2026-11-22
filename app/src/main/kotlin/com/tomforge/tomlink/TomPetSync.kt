@@ -1,12 +1,15 @@
 package com.tomforge.tomlink
 
 import android.content.Context
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.SecureRandom
+import java.time.ZoneId
+import java.util.UUID
 
-internal class TomPetSync(context: Context) {
+internal class TomPetSync(private val context: Context) {
     private val state = context.getSharedPreferences("tompet_sync", Context.MODE_PRIVATE)
     val hasDevice get() = state.contains("secret")
     val code get() = state.getString("code", null)
@@ -28,20 +31,47 @@ internal class TomPetSync(context: Context) {
 
     fun upload(store: StepStore, email: String): Int {
         val secret = state.getString("secret", null) ?: error("請先登入 Gmail。")
-        val cursor = "after:$email"
-        var after = state.getLong(cursor, 0)
-        var count = 0
+        val cursor = "daily-after:$email"
+        val after = state.getLong(cursor, 0)
         val newest = store.lastId()
-        while (after < newest) {
-            val page = store.page(after, newest)
-            if (page.records.length() == 0) break
-            val uploaded = request("/api/tomlink/sync", "POST", secret, page.records.toString())
-            check(uploaded.getInt("count") == page.records.length()) { "同步未完成，請再試一次。" }
-            after = page.lastId
-            count += page.records.length()
-            state.edit().putLong(cursor, after).apply()
+        if (after >= newest) return 0
+        val source = state.getString("daily-source", null) ?: UUID.randomUUID().toString().also {
+            check(state.edit().putString("daily-source", it).commit()) { "無法儲存同步設定。" }
         }
-        return count
+        val stepSource = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString("sourceId", null)?.substringAfter(':')
+        val transportSource = context.getSharedPreferences("transport", Context.MODE_PRIVATE)
+            .getString("source", null)
+        val legacySources = listOfNotNull(
+            stepSource?.let { "android-step-counter:$it" },
+            stepSource?.let { "android-step-detector:$it" },
+            transportSource,
+        )
+        val days = store.changedDays(after, newest)
+        for (batch in days.chunked(250)) {
+            val records = JSONArray()
+            val from = batch.first()
+            val until = batch.last().plusDays(1)
+            val stepsByDay = store.stepsByDay(from, until, TAIPEI, newest)
+            val travelByDay = store.transportByDay(from, until, TAIPEI, newest)
+            for (day in batch) {
+                val travel = travelByDay[day] ?: TravelDuration()
+                records.put(JSONObject()
+                    .put("schemaVersion", "1.0")
+                    .put("type", "daily")
+                    .put("sourceId", source)
+                    .put("date", day.toString())
+                    .put("revision", newest)
+                    .put("steps", stepsByDay.getValue(day))
+                    .put("bicycleMs", travel.bicycleMs)
+                    .put("vehicleMs", travel.vehicleMs)
+                    .put("legacySources", JSONArray(legacySources)))
+            }
+            val uploaded = request("/api/tomlink/sync", "POST", secret, records.toString())
+            check(uploaded.getInt("count") == records.length()) { "同步未完成，請再試一次。" }
+        }
+        state.edit().putLong(cursor, newest).apply()
+        return days.size
     }
 
     fun disconnect() {
@@ -81,5 +111,6 @@ internal class TomPetSync(context: Context) {
 
     companion object {
         private const val ORIGIN = "https://tomforge.com"
+        private val TAIPEI = ZoneId.of("Asia/Taipei")
     }
 }

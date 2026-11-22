@@ -65,12 +65,12 @@ internal class StepStore(context: Context) : SQLiteOpenHelper(context, "steps.db
         else writableDatabase.insertOrThrow("step_records", null, values)
     }
 
-    fun stepsByDay(from: LocalDate, until: LocalDate, zone: ZoneId): Map<LocalDate, Long> {
+    fun stepsByDay(from: LocalDate, until: LocalDate, zone: ZoneId, newest: Long = Long.MAX_VALUE): Map<LocalDate, Long> {
         val start = from.atStartOfDay(zone).toInstant().toEpochMilli()
         val end = until.atStartOfDay(zone).toInstant().toEpochMilli()
         return readableDatabase.rawQuery(
-            "SELECT start_ms, end_ms, steps FROM step_records WHERE steps IS NOT NULL AND end_ms > ? AND start_ms < ?",
-            arrayOf(start.toString(), end.toString()),
+            "SELECT start_ms, end_ms, steps FROM step_records WHERE steps IS NOT NULL AND end_ms > ? AND start_ms < ? AND id <= ?",
+            arrayOf(start.toString(), end.toString(), newest.toString()),
         ).use { rows ->
             val intervals = sequence {
                 while (rows.moveToNext()) yield(StepInterval(rows.getLong(0), rows.getLong(1), rows.getLong(2)))
@@ -79,12 +79,12 @@ internal class StepStore(context: Context) : SQLiteOpenHelper(context, "steps.db
         }
     }
 
-    fun transportByDay(from: LocalDate, until: LocalDate, zone: ZoneId): Map<LocalDate, TravelDuration> {
+    fun transportByDay(from: LocalDate, until: LocalDate, zone: ZoneId, newest: Long = Long.MAX_VALUE): Map<LocalDate, TravelDuration> {
         val begin = from.atStartOfDay(zone).toInstant().toEpochMilli()
         val end = until.atStartOfDay(zone).toInstant().toEpochMilli()
         return readableDatabase.rawQuery(
-            "SELECT start_ms, end_ms, payload FROM step_records WHERE transport_key IS NOT NULL AND end_ms > ? AND start_ms < ? ORDER BY start_ms",
-            arrayOf(begin.toString(), end.toString()),
+            "SELECT start_ms, end_ms, payload FROM step_records WHERE transport_key IS NOT NULL AND end_ms > ? AND start_ms < ? AND id <= ? ORDER BY start_ms, id",
+            arrayOf(begin.toString(), end.toString(), newest.toString()),
         ).use { rows ->
             val totals = mutableMapOf<LocalDate, TravelDuration>()
             var creditedEnd = begin
@@ -108,27 +108,27 @@ internal class StepStore(context: Context) : SQLiteOpenHelper(context, "steps.db
         }
     }
 
-    data class Page(val records: JSONArray, val lastId: Long)
-
     fun lastId(): Long = readableDatabase.rawQuery("SELECT COALESCE(MAX(id), 0) FROM step_records", null).use {
         it.moveToFirst()
         it.getLong(0)
     }
 
-    fun page(after: Long, newest: Long): Page {
-        val result = JSONArray()
-        var last = after
+    fun changedDays(after: Long, newest: Long): Set<LocalDate> =
         readableDatabase.rawQuery(
-            "SELECT id, payload FROM step_records WHERE id > ? AND id <= ? ORDER BY id LIMIT 100",
+            "SELECT DISTINCT date(start_ms/1000, 'unixepoch', '+8 hours'), date((end_ms-1)/1000, 'unixepoch', '+8 hours') FROM step_records WHERE id > ? AND id <= ? AND end_ms > start_ms",
             arrayOf(after.toString(), newest.toString()),
         ).use { rows ->
-            while (rows.moveToNext()) {
-                last = rows.getLong(0)
-                result.put(JSONObject(rows.getString(1)))
+            sortedSetOf<LocalDate>().apply {
+                while (rows.moveToNext()) {
+                    var day = LocalDate.parse(rows.getString(0))
+                    val last = LocalDate.parse(rows.getString(1))
+                    while (day <= last) {
+                        add(day)
+                        day = day.plusDays(1)
+                    }
+                }
             }
         }
-        return Page(result, last)
-    }
 
     fun export(): JSONArray {
         val result = JSONArray()

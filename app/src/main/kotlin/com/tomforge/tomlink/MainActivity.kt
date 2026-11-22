@@ -326,7 +326,7 @@ class MainActivity : Activity() {
                     notifyUser("請安裝瀏覽器後再連結 Gmail")
                 }
             }
-            else notifyUser(if (result == "0") "目前沒有新的活動紀錄" else "已同步 $result 筆活動至 TomPet")
+            else notifyUser(if (result == "0") "目前沒有新的活動紀錄" else "已同步 $result 天的活動至 TomPet")
         }
     }
 
@@ -372,9 +372,10 @@ class MainActivity : Activity() {
     }
 
     private fun renderSync() {
-        account.text = email?.let { "同步帳號：$it" }
-            ?: sync.code?.let { "回到瀏覽器確認裝置代碼 $it" }
-            ?: "請用和 TomPet 相同的 Gmail 登入。"
+        account.text = listOfNotNull(
+            email?.let { "同步帳號：$it" },
+            sync.code?.let { "裝置代碼：$it" },
+        ).joinToString("\n").ifEmpty { "請用和 TomPet 相同的 Gmail 登入。" }
         checkUpdate.isEnabled = !checking
         installUpdate.isEnabled = !checking
         installUpdate.visibility = if (latest != null) View.VISIBLE else View.GONE
