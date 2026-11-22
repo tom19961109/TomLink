@@ -62,7 +62,7 @@ class StepCalendarActivity : Activity() {
             text = "返回 TomLink"
             setOnClickListener { finish() }
         }, LinearLayout.LayoutParams(-2, -2))
-        page.addView(label("步數月曆", 26, true).apply {
+        page.addView(label("活動月曆", 26, true).apply {
             setPadding(dp(4), dp(12), dp(4), dp(10))
         })
 
@@ -87,7 +87,7 @@ class StepCalendarActivity : Activity() {
         page.addView(calendar)
         status = label("", 13).apply { setPadding(dp(4), dp(8), dp(4), 0) }
         page.addView(status)
-        page.addView(label("每週從週一開始。步數依手機時區統計。", 13).apply {
+        page.addView(label("每日以步數和交通移動時間顯示，依手機時區統計。", 13).apply {
             setPadding(dp(4), dp(10), dp(4), 0)
         })
         setContentView(scroll)
@@ -122,6 +122,7 @@ class StepCalendarActivity : Activity() {
     private data class Snapshot(
         val days: List<LocalDate>,
         val totals: Map<LocalDate, Long>,
+        val transport: Map<LocalDate, Long>,
         val today: Long,
         val week: Long,
     )
@@ -151,7 +152,7 @@ class StepCalendarActivity : Activity() {
                     } else {
                         store.stepsByDay(weekStart, weekEnd, zone)
                     }
-                    Snapshot(dates, days, currentWeek[today] ?: 0, currentWeek.values.sum())
+                    Snapshot(dates, days, store.transportByDay(first, until, zone), currentWeek[today] ?: 0, currentWeek.values.sum())
                 }
             }
             runOnUiThread {
@@ -184,7 +185,7 @@ class StepCalendarActivity : Activity() {
             calendar.addView(row().apply {
                 for (day in week) {
                     val count = snapshot.totals.getValue(day)
-                    addView(dayCell(day, count, YearMonth.from(day) == selected, day == today), cellParams())
+                    addView(dayCell(day, count, snapshot.transport[day] ?: 0, YearMonth.from(day) == selected, day == today), cellParams())
                 }
                 val total = week.sumOf { snapshot.totals.getValue(it) }
                 addView(cell("合計", number.format(total), GREEN_TINT, INK).apply {
@@ -194,11 +195,16 @@ class StepCalendarActivity : Activity() {
         }
     }
 
-    private fun dayCell(day: LocalDate, count: Long, inMonth: Boolean, isToday: Boolean) =
+    private fun dayCell(day: LocalDate, count: Long, transport: Long, inMonth: Boolean, isToday: Boolean) =
         cell(day.dayOfMonth.toString(), if (count > 0 || isToday) number.format(count) else "—",
             if (isToday) GREEN_TINT else if (inMonth) PAPER else MUTED_PAPER,
             if (inMonth || isToday) INK else MUTED_INK).apply {
             contentDescription = "${day.monthValue} 月 ${day.dayOfMonth} 日，${number.format(count)} 步"
+            if (transport > 0) {
+                val duration = if (transport >= 60_000) "${transport / 60_000} 分" else "<1 分"
+                addView(label(duration, 10, false).apply { gravity = Gravity.CENTER })
+                contentDescription = "$contentDescription，交通移動 $duration"
+            }
             isSelected = isToday
         }
 

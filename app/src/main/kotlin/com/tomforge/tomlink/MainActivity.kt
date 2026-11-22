@@ -84,7 +84,7 @@ class MainActivity : Activity() {
         status = TextView(this)
         layout.addView(status)
         layout.addView(Button(this).apply {
-            text = "步數月曆"
+            text = "活動月曆"
             setOnClickListener {
                 startActivity(Intent(this@MainActivity, StepCalendarActivity::class.java))
             }
@@ -102,6 +102,12 @@ class MainActivity : Activity() {
         }
         layout.addView(toggle)
         layout.addView(Switch(this).apply {
+            text = "自動記錄交通移動"
+            isChecked = getSharedPreferences("transport", MODE_PRIVATE).getBoolean("enabled", true)
+            setOnCheckedChangeListener { _, checked -> configureTransport(checked) }
+        })
+        layout.addView(TextView(this).apply { text = "背景偵測搭車或騎單車，只記錄時間與類別。" })
+        layout.addView(Switch(this).apply {
             text = "即時步數偵測"
             isEnabled = hasCounter && hasDetector
             isChecked = hasDetector && (!hasCounter || settings.getBoolean(FAST, false))
@@ -112,7 +118,7 @@ class MainActivity : Activity() {
         })
         layout.addView(TextView(this).apply { text = "平常使用系統計步；想即時看步數時可開啟逐步偵測。" })
         export = Button(this).apply {
-            text = "匯出步數 JSON"
+            text = "匯出活動 JSON"
             setOnClickListener {
                 startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
@@ -152,6 +158,7 @@ class MainActivity : Activity() {
         if (settings.getBoolean(ENABLED, true) && !StepService.status.running && StepService.status.error == null) {
             startCounting(!settings.getBoolean("askedMotion", false))
         }
+        if (hasMotionPermission(this) && getSharedPreferences("transport", MODE_PRIVATE).getBoolean("enabled", true)) configureTransport(true)
         if (sync.hasDevice && !busy) runWork({ sync.email() }) { email = it }
     }
 
@@ -160,8 +167,18 @@ class MainActivity : Activity() {
         super.onPause()
     }
 
+    private fun configureTransport(enabled: Boolean) {
+        if (enabled && !hasMotionPermission(this) && Build.VERSION.SDK_INT >= 29) {
+            getSharedPreferences("transport", MODE_PRIVATE).edit().putBoolean("enabled", true).apply()
+            requestPermissions(arrayOf(Manifest.permission.ACTIVITY_RECOGNITION), 1)
+            return
+        }
+        TransportReceiver.configure(applicationContext, enabled) { success ->
+            if (enabled && !success && !isDestroyed) notifyUser("無法啟用交通偵測，請確認身體活動權限與 Google Play 服務。")
+        }
+    }
+
     private fun startCounting(askPermission: Boolean) {
-        if (!hasCounter && !hasDetector) return
         if (!hasMotionPermission(this)) {
             if (askPermission && Build.VERSION.SDK_INT >= 29) {
                 settings.edit().putBoolean("askedMotion", true).apply()
@@ -169,6 +186,7 @@ class MainActivity : Activity() {
             }
             return
         }
+        if (!hasCounter && !hasDetector) return
         try {
             startForegroundService(Intent(this, StepService::class.java))
             if (Build.VERSION.SDK_INT >= 33 && !settings.getBoolean("askedNotifications", false)) {
@@ -187,7 +205,10 @@ class MainActivity : Activity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, results: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, results)
         if (requestCode != 1) return
-        if (results.firstOrNull() == PackageManager.PERMISSION_GRANTED) startCounting(false)
+        if (results.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+            if (settings.getBoolean(ENABLED, true)) startCounting(false)
+            if (getSharedPreferences("transport", MODE_PRIVATE).getBoolean("enabled", true)) configureTransport(true)
+        }
         else renderSteps(StepService.status)
     }
 
@@ -261,7 +282,7 @@ class MainActivity : Activity() {
                     notifyUser("請安裝瀏覽器後再連結 Gmail")
                 }
             }
-            else notifyUser(if (result == "0") "目前沒有新的步數" else "已同步 $result 筆步數至 TomPet")
+            else notifyUser(if (result == "0") "目前沒有新的活動紀錄" else "已同步 $result 筆活動至 TomPet")
         }
     }
 

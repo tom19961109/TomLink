@@ -21,3 +21,7 @@
 ```
 
 以 sourceId 和 recordId 的組合識別重送或更正。同時段的多來源資料應由接收端選擇一個來源，避免重複計量。格式不提供背景資料完整性的保證。
+
+## 交通移動紀錄
+
+TomLink 0.1.0-alpha.7 起，匯出和同步的陣列可同時包含步數與交通移動。交通紀錄使用 `type: "transport"`、`schemaVersion: "1.0"`、`sourceId`、`recordId`、`startTime` 和 `endTime`。以 `mode: "vehicle"` 表示搭車，以 `mode: "bicycle"` 表示騎單車。起訖時間使用 ISO 8601 與時區。紀錄不包含座標或距離。

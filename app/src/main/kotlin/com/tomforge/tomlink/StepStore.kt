@@ -10,9 +10,9 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 
-internal class StepStore(context: Context) : SQLiteOpenHelper(context, "steps.db", null, 2) {
+internal class StepStore(context: Context) : SQLiteOpenHelper(context, "steps.db", null, 3) {
     override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL("CREATE TABLE step_records (id INTEGER PRIMARY KEY, payload TEXT NOT NULL, start_ms INTEGER, end_ms INTEGER, steps INTEGER)")
+        db.execSQL("CREATE TABLE step_records (id INTEGER PRIMARY KEY, payload TEXT NOT NULL, start_ms INTEGER, end_ms INTEGER, steps INTEGER, transport_key TEXT UNIQUE)")
         createTimeIndex(db)
     }
 
@@ -36,6 +36,10 @@ internal class StepStore(context: Context) : SQLiteOpenHelper(context, "steps.db
             }
             createTimeIndex(db)
         }
+        if (oldVersion < 3) {
+            db.execSQL("ALTER TABLE step_records ADD COLUMN transport_key TEXT")
+            db.execSQL("CREATE UNIQUE INDEX transport_records_key ON step_records (transport_key)")
+        }
     }
 
     private fun createTimeIndex(db: SQLiteDatabase) {
@@ -49,27 +53,54 @@ internal class StepStore(context: Context) : SQLiteOpenHelper(context, "steps.db
     )
 
     fun append(record: JSONObject) {
-        val interval = interval(record)
+        val transport = record.optString("type") == "transport"
         val values = ContentValues().apply {
             put("payload", record.toString())
-            put("start_ms", interval.start)
-            put("end_ms", interval.end)
-            put("steps", interval.steps)
+            put("start_ms", Instant.parse(record.getString("startTime")).toEpochMilli())
+            put("end_ms", Instant.parse(record.getString("endTime")).toEpochMilli())
+            if (transport) put("transport_key", record.getString("recordId"))
+            else put("steps", record.getLong("value"))
         }
-        writableDatabase.insertOrThrow("step_records", null, values)
+        if (transport) writableDatabase.insertWithOnConflict("step_records", null, values, SQLiteDatabase.CONFLICT_IGNORE)
+        else writableDatabase.insertOrThrow("step_records", null, values)
     }
 
     fun stepsByDay(from: LocalDate, until: LocalDate, zone: ZoneId): Map<LocalDate, Long> {
         val start = from.atStartOfDay(zone).toInstant().toEpochMilli()
         val end = until.atStartOfDay(zone).toInstant().toEpochMilli()
         return readableDatabase.rawQuery(
-            "SELECT start_ms, end_ms, steps FROM step_records WHERE end_ms > ? AND start_ms < ?",
+            "SELECT start_ms, end_ms, steps FROM step_records WHERE steps IS NOT NULL AND end_ms > ? AND start_ms < ?",
             arrayOf(start.toString(), end.toString()),
         ).use { rows ->
             val intervals = sequence {
                 while (rows.moveToNext()) yield(StepInterval(rows.getLong(0), rows.getLong(1), rows.getLong(2)))
             }
             dailySteps(intervals, from, until, zone)
+        }
+    }
+
+    fun transportByDay(from: LocalDate, until: LocalDate, zone: ZoneId): Map<LocalDate, Long> {
+        val begin = from.atStartOfDay(zone).toInstant().toEpochMilli()
+        val end = until.atStartOfDay(zone).toInstant().toEpochMilli()
+        return readableDatabase.rawQuery(
+            "SELECT start_ms, end_ms FROM step_records WHERE transport_key IS NOT NULL AND end_ms > ? AND start_ms < ? ORDER BY start_ms",
+            arrayOf(begin.toString(), end.toString()),
+        ).use { rows ->
+            val totals = mutableMapOf<LocalDate, Long>()
+            var creditedEnd = begin
+            while (rows.moveToNext()) {
+                var start = maxOf(creditedEnd, rows.getLong(0))
+                val stop = minOf(end, rows.getLong(1))
+                while (start < stop) {
+                    val day = Instant.ofEpochMilli(start).atZone(zone).toLocalDate()
+                    val boundary = day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+                    val next = minOf(stop, boundary)
+                    totals.merge(day, next - start, Long::plus)
+                    start = next
+                }
+                creditedEnd = maxOf(creditedEnd, stop)
+            }
+            totals
         }
     }
 
