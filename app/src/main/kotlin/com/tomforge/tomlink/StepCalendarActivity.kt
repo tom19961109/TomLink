@@ -31,17 +31,16 @@ class StepCalendarActivity : Activity() {
     private val number = NumberFormat.getIntegerInstance()
     private val distance = NumberFormat.getNumberInstance().apply { maximumFractionDigits = 1 }
     private val transportSettings by lazy { getSharedPreferences("transport", MODE_PRIVATE) }
-    private val speeds get() = TravelSpeeds(
-        transportSettings.getInt("vehicleKph", 30),
-        transportSettings.getInt("bicycleKph", 15),
-    )
+    private val speeds get() = travelSpeeds(this)
+    private val weekly get() = intent.getBooleanExtra(EXTRA_WEEK, false)
+    private val goals by lazy { getSharedPreferences("activity_goals", MODE_PRIVATE) }
+    private val goal get() = goals.getLong("dailySteps", 8000)
+    private lateinit var goalLabel: TextView
     private lateinit var speedLabel: TextView
     private var month = YearMonth.now()
     private var requestId = 0
     private var loading = false
     private lateinit var monthLabel: TextView
-    private lateinit var todayCount: TextView
-    private lateinit var weekCount: TextView
     private lateinit var nextMonth: Button
     private lateinit var calendar: LinearLayout
     private lateinit var status: TextView
@@ -73,16 +72,22 @@ class StepCalendarActivity : Activity() {
             text = "返回 TomLink"
             setOnClickListener { finish() }
         }, LinearLayout.LayoutParams(-2, -2))
-        page.addView(label("活動月曆", 26, true).apply {
+        page.addView(label(if (weekly) "活動週曆" else "活動月曆", 26, true).apply {
             setPadding(dp(4), dp(12), dp(4), dp(10))
         })
 
-        todayCount = label("—", 22, true)
-        weekCount = label("—", 22, true)
-        page.addView(row().apply {
-            addView(summary("今日步數", todayCount), weighted())
-            addView(summary("本週總步數", weekCount), weighted())
-        })
+        if (!weekly) {
+            goalLabel = label("", 13)
+            page.addView(row().apply {
+                gravity = Gravity.CENTER_VERTICAL
+                addView(goalLabel, weighted())
+                addView(Button(this@StepCalendarActivity).apply {
+                    text = "設定步數目標"
+                    setOnClickListener { editGoal() }
+                })
+            })
+            showGoal()
+        }
 
         speedLabel = label("", 13)
         page.addView(row().apply {
@@ -99,16 +104,16 @@ class StepCalendarActivity : Activity() {
         page.addView(row().apply {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, dp(12), 0, dp(4))
-            addView(monthButton("‹", "上個月") { changeMonth(-1) }, LinearLayout.LayoutParams(dp(48), dp(48)))
+            if (!weekly) addView(monthButton("‹", "上個月") { changeMonth(-1) }, LinearLayout.LayoutParams(dp(48), dp(48)))
             addView(monthLabel, weighted())
-            addView(nextMonth, LinearLayout.LayoutParams(dp(48), dp(48)))
+            if (!weekly) addView(nextMonth, LinearLayout.LayoutParams(dp(48), dp(48)))
         })
 
         calendar = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         page.addView(calendar)
         status = label("", 13).apply { setPadding(dp(4), dp(8), dp(4), 0) }
         page.addView(status)
-        page.addView(label("距離為移動時間乘以估算時速，未使用 GPS。點日期可看搭車與騎單車的明細。", 13).apply {
+        page.addView(label(if (weekly) "點日期查看明細。公里數依交通移動時間與設定時速估算。" else "綠色已達標，紅色未達標。點日期查看活動明細。", 13).apply {
             setPadding(dp(4), dp(10), dp(4), 0)
         })
         setContentView(scroll)
@@ -144,8 +149,6 @@ class StepCalendarActivity : Activity() {
         val days: List<LocalDate>,
         val totals: Map<LocalDate, Long>,
         val transport: Map<LocalDate, TravelDuration>,
-        val today: Long,
-        val week: Long,
     )
 
     private fun load() {
@@ -155,25 +158,18 @@ class StepCalendarActivity : Activity() {
         if (month > currentMonth) month = currentMonth
         val selected = month
         val id = ++requestId
-        monthLabel.text = "${selected.year} 年 ${selected.monthValue} 月"
+        val monday = mondayOf(today)
+        monthLabel.text = if (weekly) "$monday ～ ${monday.plusDays(6)}" else "${selected.year} 年 ${selected.monthValue} 月"
         nextMonth.isEnabled = selected < currentMonth
         loading = true
         StepService.flushPending?.invoke()
         worker.execute {
             val result = runCatching {
-                val dates = calendarDays(selected)
+                val dates = if (weekly) List(7) { monday.plusDays(it.toLong()) } else calendarDays(selected)
                 val first = dates.first()
                 val until = dates.last().plusDays(1)
-                val weekStart = mondayOf(today)
-                val weekEnd = weekStart.plusWeeks(1)
                 StepStore(applicationContext).use { store ->
-                    val days = store.stepsByDay(first, until, zone)
-                    val currentWeek = if (weekStart >= first && weekEnd <= until) {
-                        days.filterKeys { it >= weekStart && it < weekEnd }
-                    } else {
-                        store.stepsByDay(weekStart, weekEnd, zone)
-                    }
-                    Snapshot(dates, days, store.transportByDay(first, until, zone), currentWeek[today] ?: 0, currentWeek.values.sum())
+                    Snapshot(dates, store.stepsByDay(first, until, zone), store.transportByDay(first, until, zone))
                 }
             }
             runOnUiThread {
@@ -184,75 +180,103 @@ class StepCalendarActivity : Activity() {
                     render(selected, today, snapshot)
                 }.onFailure {
                     calendar.removeAllViews()
-                    todayCount.text = "—"
-                    weekCount.text = "—"
-                    status.text = "暫時無法讀取步數，返回後再試一次。"
+                    status.text = "暫時無法讀取活動，返回後再試一次。"
                 }
             }
         }
     }
 
     private fun render(selected: YearMonth, today: LocalDate, snapshot: Snapshot) {
-        todayCount.text = number.format(snapshot.today)
-        weekCount.text = number.format(snapshot.week)
         calendar.removeAllViews()
+        val currentSpeeds = speeds
         calendar.addView(row().apply {
             for (title in listOf("一", "二", "三", "四", "五", "六", "日")) {
                 addView(label(title, 13, true).apply { gravity = Gravity.CENTER }, weighted(dp(30)))
             }
-            addView(label("週合計", 12, true).apply { gravity = Gravity.CENTER }, weighted(dp(30), 1.35f))
         })
         for (week in snapshot.days.chunked(7)) {
             calendar.addView(row().apply {
                 for (day in week) {
                     val count = snapshot.totals.getValue(day)
-                    addView(dayCell(day, count, snapshot.transport[day] ?: TravelDuration(), YearMonth.from(day) == selected, day == today), cellParams())
+                    val travel = snapshot.transport[day] ?: TravelDuration()
+                    val km = currentSpeeds.kilometers(travel)
+                    val future = day > today
+                    val inMonth = YearMonth.from(day) == selected
+                    val fill = when {
+                        weekly && day == today -> GREEN_TINT
+                        weekly -> PAPER
+                        !inMonth || future -> MUTED_PAPER
+                        count >= goal -> GREEN_TINT
+                        else -> RED_TINT
+                    }
+                    val ink = if (!weekly && (!inMonth || future)) MUTED_INK else INK
+                    val state = if (weekly || !inMonth || future) "" else if (count >= goal) "，已達標" else "，未達標"
+                    val steps = if (weekly && !future) number.format(count) else if (weekly) "—" else null
+                    addView(cell(day.dayOfMonth.toString(), steps, fill, ink).apply {
+                        if (weekly) addView(compactValue(if (future) "—" else formatDistance(km, distance), ink))
+                        contentDescription = "${day.monthValue} 月 ${day.dayOfMonth} 日$state" +
+                            if (weekly && !future) "，${number.format(count)} 步，${formatDistance(km, distance)}" else ""
+                        isSelected = day == today
+                        if (!future) setOnClickListener { showDayDetails(day, count, travel) }
+                    }, cellParams())
                 }
-                val total = week.sumOf { snapshot.totals.getValue(it) }
-                val km = week.sumOf { speeds.kilometers(snapshot.transport[it] ?: TravelDuration()) }
-                addView(cell("合計", number.format(total), GREEN_TINT, INK).apply {
-                    contentDescription = "${week.first()} 至 ${week.last()}，共 ${number.format(total)} 步"
-                    if (km > 0) addView(label(formatDistance(km), 10, false).apply { gravity = Gravity.CENTER })
-                }, cellParams(1.35f))
             })
+        }
+        if (weekly) {
+            val steps = snapshot.totals.values.sum()
+            val km = snapshot.transport.values.sumOf { currentSpeeds.kilometers(it) }
+            calendar.addView(label("本週總和　${number.format(steps)} 步 · ${formatDistance(km, distance)}", 17, true).apply {
+                setPadding(dp(10), dp(10), dp(10), dp(10))
+                background = tile(GREEN_TINT)
+            }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
         }
     }
 
-    private fun dayCell(day: LocalDate, count: Long, transport: TravelDuration, inMonth: Boolean, isToday: Boolean) =
-        cell(day.dayOfMonth.toString(), if (count > 0 || isToday) number.format(count) else "—",
-            if (isToday) GREEN_TINT else if (inMonth) PAPER else MUTED_PAPER,
-            if (inMonth || isToday) INK else MUTED_INK).apply {
-            contentDescription = "${day.monthValue} 月 ${day.dayOfMonth} 日，${number.format(count)} 步"
-            if (transport.totalMs > 0) {
-                val duration = formatDuration(transport.totalMs)
-                val km = formatDistance(speeds.kilometers(transport))
-                addView(label(duration, 10, false).apply { gravity = Gravity.CENTER })
-                addView(label(km, 10, false).apply { gravity = Gravity.CENTER })
-                contentDescription = "$contentDescription，交通移動 $duration，$km"
-                setOnClickListener { showTravelDetails(day, transport) }
-            }
-            isSelected = isToday
+    private fun showGoal() {
+        goalLabel.text = "每日目標 ${number.format(goal)} 步"
+    }
+
+    private fun editGoal() {
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setText(goal.toString())
+            selectAll()
         }
-
-    private fun formatDuration(ms: Long) = if (ms >= 60_000) "${ms / 60_000} 分" else "<1 分"
-
-    private fun formatDistance(km: Double): String =
-        if (km in 0.0..<0.05) "<0.1 km" else "約 ${distance.format(km)} km"
+        val fields = LinearLayout(this).apply {
+            setPadding(dp(24), dp(4), dp(24), dp(4))
+            addView(input, LinearLayout.LayoutParams(-1, -2))
+        }
+        val dialog = AlertDialog.Builder(this).setTitle("每日步數目標").setView(fields)
+            .setNegativeButton("取消", null).setPositiveButton("儲存", null).show()
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val steps = input.text.toString().toLongOrNull()
+            if (steps == null || steps <= 0) {
+                input.error = "請輸入大於 0 的步數"
+            } else {
+                goals.edit().putLong("dailySteps", steps).apply()
+                showGoal()
+                dialog.dismiss()
+                load()
+            }
+        }
+    }
 
     private fun showTravelSpeeds() {
         val current = speeds
         speedLabel.text = "搭車 ${current.vehicleKph} km/h · 單車 ${current.bicycleKph} km/h"
     }
 
-    private fun showTravelDetails(day: LocalDate, travel: TravelDuration) {
+    private fun showDayDetails(day: LocalDate, steps: Long, travel: TravelDuration) {
         val current = speeds
         val details = listOf(
             Triple("搭車", travel.vehicleMs, current.vehicleKph),
             Triple("騎單車", travel.bicycleMs, current.bicycleKph),
         ).filter { it.second > 0 }.joinToString("\n") { (mode, ms, kph) ->
-            "$mode　${formatDuration(ms)} × $kph km/h = ${formatDistance(estimatedKm(ms, kph))}"
+            "$mode　${formatTravelDuration(ms)} · $kph km/h · ${formatDistance(estimatedKm(ms, kph), distance)}"
         }
-        AlertDialog.Builder(this).setTitle("$day 交通移動").setMessage(details)
+        val summary = "步數　${number.format(steps)} 步\n行車總距離　${formatDistance(current.kilometers(travel), distance)}"
+        AlertDialog.Builder(this).setTitle(day.toString())
+            .setMessage(if (details.isEmpty()) summary else "$summary\n\n$details")
             .setPositiveButton("關閉", null).show()
     }
 
@@ -294,7 +318,7 @@ class StepCalendarActivity : Activity() {
         }
     }
 
-    private fun cell(top: String, bottom: String, fill: Int, ink: Int) =
+    private fun cell(top: String, bottom: String?, fill: Int, ink: Int) =
         LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -304,27 +328,21 @@ class StepCalendarActivity : Activity() {
                 gravity = Gravity.CENTER
                 setTextColor(ink)
             }, LinearLayout.LayoutParams(-1, dp(20)))
-            addView(label(bottom, 13, true).apply {
-                gravity = Gravity.CENTER
-                setTextColor(ink)
-                maxLines = 1
-                setAutoSizeTextTypeUniformWithConfiguration(8, 13, 1, TypedValue.COMPLEX_UNIT_SP)
-            }, LinearLayout.LayoutParams(-1, dp(25)))
+            if (bottom != null) addView(compactValue(bottom, ink))
             importantForAccessibility = android.view.View.IMPORTANT_FOR_ACCESSIBILITY_YES
         }
 
-    private fun summary(title: String, count: TextView) = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(dp(10), dp(8), dp(10), dp(8))
-        background = tile(GREEN_TINT)
-        addView(label(title, 13))
-        addView(count)
-        layoutParams = weighted()
+    private fun compactValue(text: String, ink: Int) = label(text, 12, true).apply {
+        gravity = Gravity.CENTER
+        setTextColor(ink)
+        maxLines = 1
+        setAutoSizeTextTypeUniformWithConfiguration(8, 12, 1, TypedValue.COMPLEX_UNIT_SP)
+        layoutParams = LinearLayout.LayoutParams(-1, dp(22))
     }
 
     private fun row() = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
     private fun weighted(height: Int = -2, weight: Float = 1f) = LinearLayout.LayoutParams(0, height, weight)
-    private fun cellParams(weight: Float = 1f) = weighted(dp(53), weight).apply { setMargins(dp(1), dp(1), dp(1), dp(1)) }
+    private fun cellParams() = weighted(dp(if (weekly) 72 else 47)).apply { setMargins(dp(1), dp(1), dp(1), dp(1)) }
 
     private fun monthButton(symbol: String, description: String, action: () -> Unit) = Button(this).apply {
         text = symbol
@@ -349,11 +367,13 @@ class StepCalendarActivity : Activity() {
 
     private fun dp(value: Int) = (value * resources.displayMetrics.density + .5f).toInt()
 
-    private companion object {
+    companion object {
+        internal const val EXTRA_WEEK = "show_week"
         val INK = Color.rgb(36, 54, 43)
         val MUTED_INK = Color.rgb(97, 110, 102)
         val PAPER = Color.rgb(245, 246, 242)
         val MUTED_PAPER = Color.rgb(239, 240, 237)
+        val RED_TINT = Color.rgb(250, 223, 218)
         val GREEN_TINT = Color.rgb(222, 236, 225)
     }
 }

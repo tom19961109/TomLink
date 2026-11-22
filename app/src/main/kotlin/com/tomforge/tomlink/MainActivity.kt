@@ -10,6 +10,8 @@ import android.hardware.SensorManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.view.View
 import androidx.core.content.FileProvider
@@ -20,6 +22,9 @@ import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
+import java.text.NumberFormat
+import java.time.LocalDate
+import java.time.ZoneId
 import java.util.concurrent.Executors
 
 private const val UPDATE_PERMISSION = 4
@@ -32,6 +37,23 @@ class MainActivity : Activity() {
     private val hasDetector by lazy { sensors.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR) != null }
     private val worker = Executors.newSingleThreadExecutor()
     private lateinit var status: TextView
+    private lateinit var todaySteps: TextView
+    private lateinit var sessionSteps: TextView
+    private lateinit var todayTravel: TextView
+    private lateinit var averageSpeed: TextView
+    private lateinit var todayDistance: TextView
+    private val summaryWorker = Executors.newSingleThreadExecutor()
+    private val summaryHandler = Handler(Looper.getMainLooper())
+    private var summaryActive = false
+    private var summaryGeneration = 0
+    private val wholeNumber = NumberFormat.getIntegerInstance()
+    private val decimalNumber = NumberFormat.getNumberInstance().apply { maximumFractionDigits = 1 }
+    private val summaryRefresh = object : Runnable {
+        override fun run() {
+            loadToday()
+            summaryHandler.postDelayed(this, 15_000)
+        }
+    }
     private lateinit var account: TextView
     private lateinit var toggle: Button
     private lateinit var send: Button
@@ -60,8 +82,31 @@ class MainActivity : Activity() {
             insets
         }
         layout.addView(TextView(this).apply { text = "TomLink"; textSize = 32f })
-        layout.addView(TextView(this).apply {
-            text = "首次授權後會自動計步，切換 App 或鎖屏時也可記錄。步數先存在此裝置。"
+        fun metric(title: String): TextView {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            row.addView(TextView(this).apply { text = title; textSize = 16f }, LinearLayout.LayoutParams(0, -2, 1f))
+            val value = TextView(this).apply { text = "—"; textSize = 16f }
+            row.addView(value)
+            layout.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = pad / 4 })
+            return value
+        }
+        todaySteps = metric("當天總步數")
+        sessionSteps = metric("本次步數")
+        todayTravel = metric("當天行駛總時間")
+        averageSpeed = metric("估算平均時速")
+        todayDistance = metric("估算行駛距離")
+        layout.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            listOf("活動月曆" to false, "活動週曆" to true).forEach { (label, weekly) ->
+                val button = Button(this@MainActivity).apply {
+                    text = label
+                    setOnClickListener {
+                        startActivity(Intent(this@MainActivity, StepCalendarActivity::class.java)
+                            .putExtra(StepCalendarActivity.EXTRA_WEEK, weekly))
+                    }
+                }
+                addView(button, LinearLayout.LayoutParams(0, -2, 1f))
+            }
         })
         updateStatus = TextView(this).apply { text = "目前版本 ${updates.versionName}" }
         layout.addView(updateStatus)
@@ -83,12 +128,6 @@ class MainActivity : Activity() {
         })
         status = TextView(this)
         layout.addView(status)
-        layout.addView(Button(this).apply {
-            text = "活動月曆"
-            setOnClickListener {
-                startActivity(Intent(this@MainActivity, StepCalendarActivity::class.java))
-            }
-        })
         toggle = Button(this).apply {
             setOnClickListener {
                 if (StepService.status.running) {
@@ -153,6 +192,8 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        summaryActive = true
+        summaryRefresh.run()
         StepService.listener = ::renderSteps
         renderSteps(StepService.status)
         if (settings.getBoolean(ENABLED, true) && !StepService.status.running && StepService.status.error == null) {
@@ -163,6 +204,9 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
+        summaryActive = false
+        summaryGeneration++
+        summaryHandler.removeCallbacks(summaryRefresh)
         StepService.listener = null
         super.onPause()
     }
@@ -286,13 +330,42 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun loadToday() {
+        if (!summaryActive) return
+        val generation = ++summaryGeneration
+        StepService.flushPending?.invoke()
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now(zone)
+        val tomorrow = today.plusDays(1)
+        val currentSpeeds = travelSpeeds(this)
+        summaryWorker.execute {
+            val result = runCatching {
+                StepStore(applicationContext).use { store ->
+                    val steps = store.stepsByDay(today, tomorrow, zone).getValue(today)
+                    val travel = store.transportByDay(today, tomorrow, zone)[today] ?: TravelDuration()
+                    steps to travel
+                }
+            }
+            runOnUiThread {
+                if (!summaryActive || generation != summaryGeneration) return@runOnUiThread
+                result.onSuccess { (steps, travel) ->
+                    todaySteps.text = "${wholeNumber.format(steps)} 步"
+                    todayTravel.text = formatTravelDuration(travel.totalMs)
+                    averageSpeed.text = if (travel.totalMs > 0) "約 ${decimalNumber.format(currentSpeeds.averageKph(travel))} km/h" else "—"
+                    todayDistance.text = formatDistance(currentSpeeds.kilometers(travel), decimalNumber)
+                }
+            }
+        }
+    }
+
     private fun renderSteps(state: StepService.Status) {
+        sessionSteps.text = "${wholeNumber.format(state.steps)} 步"
         status.text = when {
             !hasCounter && !hasDetector -> "此裝置沒有系統計步感測器。"
             !hasMotionPermission(this) -> "需要身體活動權限才能計步。"
             state.error != null -> state.error
-            state.running -> "背景計步中｜本次 ${state.steps} 步"
-            else -> "計步已暫停｜本次 ${state.steps} 步"
+            state.running -> "背景計步中"
+            else -> "計步已暫停"
         }
         toggle.isEnabled = hasCounter || hasDetector
         toggle.text = if (state.running) "暫停計步" else "開始計步"
@@ -347,6 +420,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        summaryWorker.shutdown()
         worker.shutdown()
         super.onDestroy()
     }
