@@ -32,6 +32,7 @@ import java.time.ZoneId
 import java.util.concurrent.Executors
 
 private const val UPDATE_PERMISSION = 4
+private const val GPS_PERMISSION = 5
 
 class MainActivity : Activity() {
     private val settings by lazy { getSharedPreferences(PREFS, MODE_PRIVATE) }
@@ -43,9 +44,18 @@ class MainActivity : Activity() {
     private lateinit var controlsDialog: AlertDialog
     private lateinit var goalProgress: ProgressBar
     private lateinit var goalText: TextView
-    private lateinit var status: TextView
     private lateinit var todaySteps: TextView
-    private lateinit var sessionSteps: TextView
+    private lateinit var countingSetting: Switch
+    private lateinit var gpsSetting: Switch
+    private lateinit var liveSpeedCell: LinearLayout
+    private lateinit var liveSpeed: TextView
+    private lateinit var travelSource: TextView
+    private val gps by lazy {
+        GpsTravel(this) { speed ->
+            liveSpeedCell.visibility = if (speed == null) View.INVISIBLE else View.VISIBLE
+            liveSpeed.text = speed?.let { "${decimalNumber.format(it)} km/h" }.orEmpty()
+        }
+    }
     private lateinit var todayTravel: TextView
     private lateinit var averageSpeed: TextView
     private lateinit var todayDistance: TextView
@@ -53,16 +63,20 @@ class MainActivity : Activity() {
     private val summaryHandler = Handler(Looper.getMainLooper())
     private var summaryActive = false
     private var summaryGeneration = 0
+    private var stepRefreshQueued = false
+    private val stepRefresh = Runnable {
+        stepRefreshQueued = false
+        loadToday()
+    }
     private val wholeNumber = NumberFormat.getIntegerInstance()
     private val decimalNumber = NumberFormat.getNumberInstance().apply { maximumFractionDigits = 1 }
     private val summaryRefresh = object : Runnable {
         override fun run() {
             loadToday()
-            summaryHandler.postDelayed(this, 15_000)
+            summaryHandler.postDelayed(this, if (settings.getBoolean("gpsSpeed", false)) 5_000L else 15_000L)
         }
     }
     private lateinit var account: TextView
-    private lateinit var toggle: Button
     private lateinit var send: Button
     private lateinit var disconnect: Button
     private lateinit var export: Button
@@ -88,23 +102,17 @@ class MainActivity : Activity() {
         })
         page.block(activitySummary(), 12)
         page.block(travelSummary(), 12)
-        page.block(card().apply {
-            block(heading("活動紀錄"))
-            block(LinearLayout(this@MainActivity).apply {
-                addView(calendarAction("週曆", true), LinearLayout.LayoutParams(0, -2, 1f))
-                addView(calendarAction("月曆", false), LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(8) })
-            }, 10)
-        }, 12)
-        page.block(card().apply {
-            block(heading("同步至 TomPet"))
-            account = label("", 14, ink = LinkColors.muted)
-            block(account, 5)
-            send = action("同步活動", primary = true) { sendSteps() }
-            block(send, 10)
-        }, 12)
+        page.block(LinearLayout(this).apply {
+            fun addAction(button: Button, gap: Int) {
+                addView(button, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(gap) })
+            }
+            addAction(calendarAction("週曆", true), 0)
+            addAction(calendarAction("月曆", false), 6)
+            send = action("同步", primary = true) { sendSteps() }
+            addAction(send, 6)
+        }, 10)
         controlsDialog = createControls()
         setContentView(pageScroll(page))
-        renderSteps(StepService.status)
         renderSync()
         if (savedInstanceState?.getBoolean("controlsOpen") == true) controlsDialog.show()
     }
@@ -131,36 +139,31 @@ class MainActivity : Activity() {
         block(goalProgress, 12)
         goalText = label("", 13, ink = LinkColors.mutedMint)
         block(goalText, 5)
-        status = label("", 14, true, LinkColors.onAccent).apply { accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
-        block(status, 13)
-        sessionSteps = label("", 13, ink = LinkColors.mutedMint)
-        block(sessionSteps, 2)
-        toggle = action("開始計步") {
-            if (StepService.status.running) {
-                settings.edit().putBoolean(ENABLED, false).apply()
-                stopService(Intent(this@MainActivity, StepService::class.java))
-            } else {
-                settings.edit().putBoolean(ENABLED, true).apply()
-                startCounting(true)
-            }
-        }
-        addView(toggle, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(12) })
     }
 
     private fun travelSummary() = card().apply {
         block(heading("今日移動"))
-        fun metric(title: String): TextView {
-            val value = label("—", 15, true)
-            block(LinearLayout(this@MainActivity).apply {
-                gravity = Gravity.CENTER_VERTICAL
-                addView(label(title, 14, ink = LinkColors.muted), LinearLayout.LayoutParams(0, -2, 1f))
-                addView(value)
-            }, 9)
-            return value
+        fun metric(title: String, row: LinearLayout, gap: Int = 0): Pair<LinearLayout, TextView> {
+            val value = label("—", 16, true)
+            val cell = column().apply {
+                block(label(title, 13, ink = LinkColors.muted))
+                block(value, 2)
+            }
+            row.addView(cell, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(gap) })
+            return cell to value
         }
-        todayTravel = metric("移動時間")
-        todayDistance = metric("估算距離")
-        averageSpeed = metric("估算平均時速")
+        val first = LinearLayout(this@MainActivity)
+        todayTravel = metric("行駛時間", first).second
+        todayDistance = metric("行駛里程", first, 10).second
+        block(first, 8)
+        val second = LinearLayout(this@MainActivity)
+        averageSpeed = metric("平均時速", second).second
+        val current = metric("當前時速", second, 10)
+        liveSpeedCell = current.first.apply { visibility = View.INVISIBLE }
+        liveSpeed = current.second
+        block(second, 8)
+        travelSource = label("", 12, ink = LinkColors.muted).apply { visibility = View.GONE }
+        block(travelSource, 8)
     }
 
     private fun calendarAction(title: String, weekly: Boolean) = action(title) {
@@ -177,17 +180,37 @@ class MainActivity : Activity() {
             setOnCheckedChangeListener { _, checked -> configureTransport(checked) }
         })
         content.block(label("記錄搭車與單車的時間及類別。", 13, ink = LinkColors.muted))
-        content.block(Switch(this).apply {
-            text = "即時步數偵測"
+        countingSetting = Switch(this).apply {
+            text = "即時計步"
             minHeight = dp(48)
-            isEnabled = hasCounter && hasDetector
-            isChecked = hasDetector && (!hasCounter || settings.getBoolean(FAST, false))
-            setOnCheckedChangeListener { _, checked ->
-                settings.edit().putBoolean(FAST, checked).apply()
-                if (StepService.status.running) startCounting(false)
+            isEnabled = hasCounter || hasDetector
+            isChecked = settings.getBoolean(ENABLED, true)
+            setOnClickListener {
+                settings.edit().putBoolean(ENABLED, isChecked).apply()
+                if (isChecked) startCounting(true)
+                else stopService(Intent(this@MainActivity, StepService::class.java))
             }
-        }, 4)
+        }
+        content.block(countingSetting, 4)
+        gpsSetting = Switch(this).apply {
+            text = "GPS 時速"
+            minHeight = dp(48)
+            isChecked = settings.getBoolean("gpsSpeed", false) && gps.hasPermission()
+            setOnClickListener {
+                if (isChecked && !gps.hasPermission()) {
+                    isChecked = false
+                    requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), GPS_PERMISSION)
+                } else {
+                    settings.edit().putBoolean("gpsSpeed", isChecked).apply()
+                    updateGps()
+                }
+            }
+        }
+        content.block(gpsSetting, 4)
+        content.block(label("開啟 App 時量測。手機只保存速度與時間的統計。", 13, ink = LinkColors.muted))
         content.block(heading("資料與連結"), 18)
+        account = label("", 14, ink = LinkColors.muted)
+        content.block(account, 5)
         export = action("匯出活動 JSON") {
             startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
                 addCategory(Intent.CATEGORY_OPENABLE)
@@ -223,8 +246,9 @@ class MainActivity : Activity() {
         super.onResume()
         summaryActive = true
         summaryRefresh.run()
-        StepService.listener = ::renderSteps
-        renderSteps(StepService.status)
+        StepService.listener = { onStepUpdate() }
+        countingSetting.isChecked = settings.getBoolean(ENABLED, true)
+        updateGps()
         if (settings.getBoolean(ENABLED, true) && !StepService.status.running && StepService.status.error == null) {
             startCounting(!settings.getBoolean("askedMotion", false))
         }
@@ -236,8 +260,17 @@ class MainActivity : Activity() {
         summaryActive = false
         summaryGeneration++
         summaryHandler.removeCallbacks(summaryRefresh)
+        summaryHandler.removeCallbacks(stepRefresh)
+        stepRefreshQueued = false
+        gps.stop()
         StepService.listener = null
         super.onPause()
+    }
+
+    private fun updateGps() {
+        val enabled = settings.getBoolean("gpsSpeed", false) && gps.hasPermission()
+        gpsSetting.isChecked = enabled
+        if (summaryActive && enabled) gps.start() else gps.stop()
     }
 
     private fun configureTransport(enabled: Boolean) {
@@ -277,12 +310,18 @@ class MainActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, results: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, results)
+        if (requestCode == GPS_PERMISSION) {
+            val granted = gps.hasPermission()
+            settings.edit().putBoolean("gpsSpeed", granted).apply()
+            updateGps()
+            if (!granted) notifyUser("開啟 GPS 時速需要精確定位權限")
+            return
+        }
         if (requestCode != 1) return
         if (results.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
             if (settings.getBoolean(ENABLED, true)) startCounting(false)
             if (getSharedPreferences("transport", MODE_PRIVATE).getBoolean("enabled", true)) configureTransport(true)
         }
-        else renderSteps(StepService.status)
     }
 
     private fun checkForUpdate() {
@@ -367,11 +406,12 @@ class MainActivity : Activity() {
         val today = LocalDate.now(zone)
         val tomorrow = today.plusDays(1)
         val currentSpeeds = travelSpeeds(this)
+        val active = TransportReceiver.activeTravel(this)
         summaryWorker.execute {
             val result = runCatching {
                 StepStore(applicationContext).use { store ->
                     val steps = store.stepsByDay(today, tomorrow, zone).getValue(today)
-                    val travel = store.transportByDay(today, tomorrow, zone)[today] ?: TravelDuration()
+                    val travel = store.transportByDay(today, tomorrow, zone, active = active)[today] ?: TravelDuration()
                     steps to travel
                 }
             }
@@ -382,25 +422,35 @@ class MainActivity : Activity() {
                     val goal = getSharedPreferences("activity_goals", MODE_PRIVATE).getLong("dailySteps", 8000).coerceAtLeast(1)
                     goalProgress.progress = ((steps.toDouble() / goal).coerceIn(0.0, 1.0) * goalProgress.max).toInt()
                     goalText.text = "每日目標 ${wholeNumber.format(goal)} 步"
-                    todayTravel.text = formatTravelDuration(travel.totalMs)
-                    averageSpeed.text = if (travel.totalMs > 0) "約 ${decimalNumber.format(currentSpeeds.averageKph(travel))} km/h" else "—"
-                    todayDistance.text = formatDistance(currentSpeeds.kilometers(travel), decimalNumber)
+                    val measured = gps.totals(today)
+                    val measuredSpeed = measured.averageKph
+                    averageSpeed.text = when {
+                        measuredSpeed != null -> "${decimalNumber.format(measuredSpeed)} km/h"
+                        travel.totalMs > 0 -> "約 ${decimalNumber.format(currentSpeeds.averageKph(travel))} km/h"
+                        else -> "—"
+                    }
+                    val totalMs = maxOf(travel.totalMs, measured.durationMs)
+                    val km = measuredSpeed?.let { estimatedKm(totalMs, it) } ?: currentSpeeds.kilometers(travel)
+                    todayTravel.text = formatTravelDuration(totalMs)
+                    todayDistance.text = if (measuredSpeed != null && totalMs == measured.durationMs)
+                        "${decimalNumber.format(km)} km" else formatDistance(km, decimalNumber)
+                    travelSource.text = when {
+                        measuredSpeed != null && measured.durationMs < totalMs ->
+                            "GPS 實測 ${formatTravelDuration(measured.durationMs)}，里程按全天行駛時間推估"
+                        measuredSpeed != null -> "GPS 實測"
+                        travel.totalMs > 0 -> "依預設時速估算"
+                        else -> ""
+                    }
+                    travelSource.visibility = if (travelSource.text.isEmpty()) View.GONE else View.VISIBLE
                 }
             }
         }
     }
 
-    private fun renderSteps(state: StepService.Status) {
-        sessionSteps.text = "本次計步 ${wholeNumber.format(state.steps)} 步"
-        status.text = when {
-            !hasCounter && !hasDetector -> "此裝置沒有系統計步感測器。"
-            !hasMotionPermission(this) -> "需要身體活動權限才能計步。"
-            state.error != null -> state.error
-            state.running -> "背景計步中"
-            else -> "計步已暫停"
-        }
-        toggle.isEnabled = hasCounter || hasDetector
-        toggle.text = if (state.running) "暫停計步" else "開始計步"
+    private fun onStepUpdate() {
+        if (!summaryActive || stepRefreshQueued) return
+        stepRefreshQueued = true
+        summaryHandler.postDelayed(stepRefresh, 600)
     }
 
     private fun renderSync() {

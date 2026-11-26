@@ -36,5 +36,7 @@ internal fun formatTravelDuration(ms: Long): String {
     }
 }
 
-internal fun estimatedKm(durationMs: Long, speedKph: Int): Double =
+internal fun estimatedKm(durationMs: Long, speedKph: Int): Double = estimatedKm(durationMs, speedKph.toDouble())
+
+internal fun estimatedKm(durationMs: Long, speedKph: Double): Double =
     durationMs / 3_600_000.0 * speedKph

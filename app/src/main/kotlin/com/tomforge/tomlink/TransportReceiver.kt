@@ -76,6 +76,19 @@ class TransportReceiver : BroadcastReceiver() {
     }
 
     companion object {
+        internal fun activeTravel(context: Context, now: Long = SystemClock.elapsedRealtime()): ActiveTravel? {
+            val state = context.getSharedPreferences("transport", Context.MODE_PRIVATE).all
+            if (state["enabled"] == false) return null
+            val type = state["active"] as? Int ?: return null
+            val mode = mode(type) ?: return null
+            val start = state["start"] as? Long ?: return null
+            val boot = state["boot"] as? Long ?: return null
+            if (start !in 1..now || now - start >= 86_400_000L) return null
+            val wall = System.currentTimeMillis()
+            if (kotlin.math.abs(boot - (wall - now)) >= 120_000L) return null
+            return ActiveTravel(start, wall - (now - start), wall, mode == "bicycle")
+        }
+
         private val executor = Executors.newSingleThreadExecutor()
         private val types = listOf(DetectedActivity.IN_VEHICLE, DetectedActivity.ON_BICYCLE)
         private fun mode(type: Int) = when (type) {

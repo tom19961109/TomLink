@@ -25,7 +25,6 @@ import java.util.UUID
 
 internal const val PREFS = "steps"
 internal const val ENABLED = "countingEnabled"
-internal const val FAST = "stepDetector"
 
 internal fun hasMotionPermission(context: Context) = Build.VERSION.SDK_INT < 29 ||
     context.checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED
@@ -98,7 +97,7 @@ class StepService : Service(), SensorEventListener {
 
         val counter = sensors.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
         val detector = sensors.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
-        val preferred = if (preferences.getBoolean(FAST, false)) detector ?: counter else counter ?: detector
+        val preferred = detector ?: counter
         if (activeSensor != null && preferred == activeSensor) return START_STICKY
         flush()
         if (failed) return START_NOT_STICKY

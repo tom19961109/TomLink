@@ -79,7 +79,7 @@ internal class StepStore(context: Context) : SQLiteOpenHelper(context, "steps.db
         }
     }
 
-    fun transportByDay(from: LocalDate, until: LocalDate, zone: ZoneId, newest: Long = Long.MAX_VALUE): Map<LocalDate, TravelDuration> {
+    fun transportByDay(from: LocalDate, until: LocalDate, zone: ZoneId, newest: Long = Long.MAX_VALUE, active: ActiveTravel? = null): Map<LocalDate, TravelDuration> {
         val begin = from.atStartOfDay(zone).toInstant().toEpochMilli()
         val end = until.atStartOfDay(zone).toInstant().toEpochMilli()
         return readableDatabase.rawQuery(
@@ -88,10 +88,9 @@ internal class StepStore(context: Context) : SQLiteOpenHelper(context, "steps.db
         ).use { rows ->
             val totals = mutableMapOf<LocalDate, TravelDuration>()
             var creditedEnd = begin
-            while (rows.moveToNext()) {
-                var start = maxOf(creditedEnd, rows.getLong(0))
-                val stop = minOf(end, rows.getLong(1))
-                val bicycle = JSONObject(rows.getString(2)).optString("mode") == "bicycle"
+            fun addTravel(startMs: Long, endMs: Long, bicycle: Boolean) {
+                var start = maxOf(creditedEnd, startMs)
+                val stop = minOf(end, endMs)
                 while (start < stop) {
                     val day = Instant.ofEpochMilli(start).atZone(zone).toLocalDate()
                     val boundary = day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
@@ -104,6 +103,10 @@ internal class StepStore(context: Context) : SQLiteOpenHelper(context, "steps.db
                 }
                 creditedEnd = maxOf(creditedEnd, stop)
             }
+            while (rows.moveToNext()) {
+                addTravel(rows.getLong(0), rows.getLong(1), JSONObject(rows.getString(2)).optString("mode") == "bicycle")
+            }
+            active?.let { addTravel(it.startWallMs, it.endWallMs, it.bicycle) }
             totals
         }
     }
