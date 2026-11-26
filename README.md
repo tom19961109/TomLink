@@ -7,7 +7,7 @@ TomLink 是獨立的開源 Android 活動資料工具。步數和交通移動保
 
 ## 計步
 
-1. 安裝測試版 APK。需要 Android 8.0 以上與系統計步器或逐步偵測器。
+1. 安裝 APK。需要 Android 8.0 以上與系統計步器或逐步偵測器。
 2. 第一次開啟並允許身體活動權限後，App 會自動開始計步。背景服務能在切換 App 或鎖屏後繼續運作，可在 App 設定關閉「即時計步」。強制停止或重新開機後，重新開啟 App 即可繼續。
 3. 支援逐步偵測器時，首頁會隨步數更新。其他裝置依系統計步器的回報更新。
 
@@ -42,8 +42,8 @@ GPS 時速預設關閉。開啟後需允許精確定位，TomLink 只在首頁�
 
 使用 JDK 21 與 Android SDK Platform 36。Windows 執行 `./gradlew.bat assembleDebug`，Linux 或 macOS 執行 `bash gradlew assembleDebug`。APK 位於 `app/build/outputs/apk/debug/`。
 
-### 發布測試版
+### 發布 Android 版本
 
-更新 `app/build.gradle` 的版本名稱並遞增版本碼，執行 `assembleRelease`，使用 TomLink 的固定發布金鑰簽署 APK。請將金鑰和密碼保存在 Git 之外。
+以「架構.頁面.功能.DEBUG」更新 `app/build.gradle` 的版本名稱，首次正式發行使用 `1.0.0.0`，並遞增 Android 版本代碼，執行 `assembleRelease`，使用 TomLink 的固定發布金鑰簽署 APK。請將金鑰和密碼保存在 Git 之外。
 
 為簽署後的 `TomLink-Android-preview.apk` 建立 `update.json`，欄位為 `versionCode`（數字）、`versionName` 和 `sha256`（完整 APK 的 SHA-256）。在相同版本的原始碼提交之上建立一筆只含這兩個檔案的提交，將它推送到 `apk-v<versionName>` 標籤，然後推送指向原始碼的 `v<versionName>` 標籤。GitHub Actions 驗證 APK 簽章、版本和雜湊後發布。

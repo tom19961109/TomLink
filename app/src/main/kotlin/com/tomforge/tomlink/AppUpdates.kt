@@ -126,7 +126,7 @@ internal class AppUpdates(private val context: Context) {
         private const val API = "https://api.github.com/repos/tom19961109/TomLink"
         private const val DOWNLOAD = "https://github.com/tom19961109/TomLink/releases/download"
         private const val APK_NAME = "TomLink-Android-preview.apk"
-        private val TAG = Regex("""v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?""")
+        private val TAG = Regex("""v\d+\.\d+\.\d+(?:\.\d+|-[0-9A-Za-z.-]+)?""")
         private val HASH = Regex("[a-fA-F0-9]{64}")
         @Suppress("DEPRECATION")
         private val SIGNING_FLAGS = if (Build.VERSION.SDK_INT >= 28) {
