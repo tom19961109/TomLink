@@ -187,6 +187,7 @@ class StepService : Service(), SensorEventListener {
         val stop = PendingIntent.getService(this, 1, Intent(this, StepService::class.java).setAction(STOP), PendingIntent.FLAG_IMMUTABLE)
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+            .setColor(LinkColors.accent)
             .setContentTitle("TomLink 正在計步")
             .setContentText("步數儲存在這部手機")
             .setContentIntent(open)

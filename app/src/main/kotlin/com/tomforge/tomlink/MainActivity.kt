@@ -2,9 +2,11 @@ package com.tomforge.tomlink
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.hardware.Sensor
 import android.hardware.SensorManager
 import android.net.Uri
@@ -15,10 +17,12 @@ import android.os.Looper
 import android.provider.Settings
 import android.view.View
 import androidx.core.content.FileProvider
-import android.view.WindowInsets
+import androidx.core.view.ViewCompat
+import android.view.Gravity
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.ProgressBar
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
@@ -36,6 +40,9 @@ class MainActivity : Activity() {
     private val hasCounter by lazy { sensors.getDefaultSensor(Sensor.TYPE_STEP_COUNTER) != null }
     private val hasDetector by lazy { sensors.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR) != null }
     private val worker = Executors.newSingleThreadExecutor()
+    private lateinit var controlsDialog: AlertDialog
+    private lateinit var goalProgress: ProgressBar
+    private lateinit var goalText: TextView
     private lateinit var status: TextView
     private lateinit var todaySteps: TextView
     private lateinit var sessionSteps: TextView
@@ -70,126 +77,148 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val scroll = ScrollView(this)
-        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val pad = (24 * resources.displayMetrics.density).toInt()
-        layout.setPadding(pad, pad, pad, pad)
-        scroll.setOnApplyWindowInsetsListener { _, insets ->
-            if (Build.VERSION.SDK_INT >= 30) {
-                val bars = insets.getInsets(WindowInsets.Type.systemBars())
-                layout.setPadding(pad + bars.left, pad + bars.top, pad + bars.right, pad + bars.bottom)
-            }
-            insets
+        val page = column()
+        val title = label("TomLink", 30, true)
+        ViewCompat.setAccessibilityHeading(title, true)
+        val controls = action("設定與更新") { controlsDialog.show() }
+        page.block(LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            addView(title, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(controls)
+        })
+        page.block(activitySummary(), 12)
+        page.block(travelSummary(), 12)
+        page.block(card().apply {
+            block(heading("活動紀錄"))
+            block(LinearLayout(this@MainActivity).apply {
+                addView(calendarAction("週曆", true), LinearLayout.LayoutParams(0, -2, 1f))
+                addView(calendarAction("月曆", false), LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(8) })
+            }, 10)
+        }, 12)
+        page.block(card().apply {
+            block(heading("同步至 TomPet"))
+            account = label("", 14, ink = LinkColors.muted)
+            block(account, 5)
+            send = action("同步活動", primary = true) { sendSteps() }
+            block(send, 10)
+        }, 12)
+        controlsDialog = createControls()
+        setContentView(pageScroll(page))
+        renderSteps(StepService.status)
+        renderSync()
+        if (savedInstanceState?.getBoolean("controlsOpen") == true) controlsDialog.show()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean("controlsOpen", controlsDialog.isShowing)
+        super.onSaveInstanceState(outState)
+    }
+
+    private fun heading(text: String) = label(text, 18, true).apply { ViewCompat.setAccessibilityHeading(this, true) }
+
+    private fun activitySummary() = card(LinkColors.accent).apply {
+        block(label("今日步數", 16, true, LinkColors.onAccent))
+        todaySteps = label("—", 44, true, LinkColors.onAccent).apply {
+            fontFeatureSettings = "tnum"
         }
-        layout.addView(TextView(this).apply { text = "TomLink"; textSize = 32f })
+        block(todaySteps, 3)
+        goalProgress = ProgressBar(this@MainActivity, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 1000
+            progressTintList = ColorStateList.valueOf(LinkColors.onAccent)
+            progressBackgroundTintList = ColorStateList.valueOf(0xFF5B8A73.toInt())
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        block(goalProgress, 12)
+        goalText = label("", 13, ink = LinkColors.mutedMint)
+        block(goalText, 5)
+        status = label("", 14, true, LinkColors.onAccent).apply { accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
+        block(status, 13)
+        sessionSteps = label("", 13, ink = LinkColors.mutedMint)
+        block(sessionSteps, 2)
+        toggle = action("開始計步") {
+            if (StepService.status.running) {
+                settings.edit().putBoolean(ENABLED, false).apply()
+                stopService(Intent(this@MainActivity, StepService::class.java))
+            } else {
+                settings.edit().putBoolean(ENABLED, true).apply()
+                startCounting(true)
+            }
+        }
+        addView(toggle, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(12) })
+    }
+
+    private fun travelSummary() = card().apply {
+        block(heading("今日移動"))
         fun metric(title: String): TextView {
-            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            row.addView(TextView(this).apply { text = title; textSize = 16f }, LinearLayout.LayoutParams(0, -2, 1f))
-            val value = TextView(this).apply { text = "—"; textSize = 16f }
-            row.addView(value)
-            layout.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = pad / 4 })
+            val value = label("—", 15, true)
+            block(LinearLayout(this@MainActivity).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                addView(label(title, 14, ink = LinkColors.muted), LinearLayout.LayoutParams(0, -2, 1f))
+                addView(value)
+            }, 9)
             return value
         }
-        todaySteps = metric("當天總步數")
-        sessionSteps = metric("本次步數")
-        todayTravel = metric("當天行駛總時間")
+        todayTravel = metric("移動時間")
+        todayDistance = metric("估算距離")
         averageSpeed = metric("估算平均時速")
-        todayDistance = metric("估算行駛距離")
-        layout.addView(LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            listOf("活動月曆" to false, "活動週曆" to true).forEach { (label, weekly) ->
-                val button = Button(this@MainActivity).apply {
-                    text = label
-                    setOnClickListener {
-                        startActivity(Intent(this@MainActivity, StepCalendarActivity::class.java)
-                            .putExtra(StepCalendarActivity.EXTRA_WEEK, weekly))
-                    }
-                }
-                addView(button, LinearLayout.LayoutParams(0, -2, 1f))
-            }
-        })
-        updateStatus = TextView(this).apply { text = "目前版本 ${updates.versionName}" }
-        layout.addView(updateStatus)
-        checkUpdate = Button(this).apply {
-            text = "檢查更新"
-            setOnClickListener {
-                latest = null
-                checkForUpdate()
-            }
-        }
-        installUpdate = Button(this).apply {
-            text = "更新"
-            setOnClickListener { latest?.let { downloadUpdate(it) } }
-        }
-        layout.addView(LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            addView(checkUpdate)
-            addView(installUpdate)
-        })
-        status = TextView(this)
-        layout.addView(status)
-        toggle = Button(this).apply {
-            setOnClickListener {
-                if (StepService.status.running) {
-                    settings.edit().putBoolean(ENABLED, false).apply()
-                    stopService(Intent(this@MainActivity, StepService::class.java))
-                } else {
-                    settings.edit().putBoolean(ENABLED, true).apply()
-                    startCounting(true)
-                }
-            }
-        }
-        layout.addView(toggle)
-        layout.addView(Switch(this).apply {
+    }
+
+    private fun calendarAction(title: String, weekly: Boolean) = action(title) {
+        startActivity(Intent(this, StepCalendarActivity::class.java).putExtra(StepCalendarActivity.EXTRA_WEEK, weekly))
+    }
+
+    private fun createControls(): AlertDialog {
+        val content = column().apply { setPadding(dp(22), dp(4), dp(22), dp(8)) }
+        content.block(heading("活動記錄"))
+        content.block(Switch(this).apply {
             text = "自動記錄交通移動"
+            minHeight = dp(48)
             isChecked = getSharedPreferences("transport", MODE_PRIVATE).getBoolean("enabled", true)
             setOnCheckedChangeListener { _, checked -> configureTransport(checked) }
         })
-        layout.addView(TextView(this).apply { text = "背景偵測搭車或騎單車，只記錄時間與類別。" })
-        layout.addView(Switch(this).apply {
+        content.block(label("記錄搭車與單車的時間及類別。", 13, ink = LinkColors.muted))
+        content.block(Switch(this).apply {
             text = "即時步數偵測"
+            minHeight = dp(48)
             isEnabled = hasCounter && hasDetector
             isChecked = hasDetector && (!hasCounter || settings.getBoolean(FAST, false))
             setOnCheckedChangeListener { _, checked ->
                 settings.edit().putBoolean(FAST, checked).apply()
                 if (StepService.status.running) startCounting(false)
             }
-        })
-        layout.addView(TextView(this).apply { text = "平常使用系統計步；想即時看步數時可開啟逐步偵測。" })
-        export = Button(this).apply {
-            text = "匯出活動 JSON"
-            setOnClickListener {
-                startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-                    addCategory(Intent.CATEGORY_OPENABLE)
-                    type = "application/json"
-                    putExtra(Intent.EXTRA_TITLE, "tomlink-steps.json")
-                }, 2)
+        }, 4)
+        content.block(heading("資料與連結"), 18)
+        export = action("匯出活動 JSON") {
+            startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "application/json"
+                putExtra(Intent.EXTRA_TITLE, "tomlink-steps.json")
+            }, 2)
+        }
+        content.block(export, 8)
+        disconnect = action("解除 Gmail 連結") {
+            runWork({ sync.disconnect() }) {
+                email = null
+                notifyUser("已解除 Gmail 連結")
             }
         }
-        layout.addView(export)
-        account = TextView(this)
-        layout.addView(account)
-        send = Button(this).apply {
-            text = "同步至 TomPet"
-            setOnClickListener { sendSteps() }
+        content.block(disconnect, 6)
+        content.block(heading("版本更新"), 18)
+        updateStatus = label("目前版本 ${updates.versionName}", 14, ink = LinkColors.muted).apply {
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
-        layout.addView(send)
-        disconnect = Button(this).apply {
-            text = "解除 Gmail 連結"
-            setOnClickListener {
-                runWork({ sync.disconnect() }) {
-                    email = null
-                    notifyUser("已解除 Gmail 連結")
-                }
-            }
+        content.block(updateStatus, 5)
+        checkUpdate = action("檢查更新") {
+            latest = null
+            checkForUpdate()
         }
-        layout.addView(disconnect)
-        scroll.addView(layout)
-        setContentView(scroll)
-        renderSteps(StepService.status)
-        renderSync()
+        content.block(checkUpdate, 8)
+        installUpdate = action("下載並安裝新版", primary = true) { latest?.let { downloadUpdate(it) } }
+        content.block(installUpdate, 6)
+        val scroll = ScrollView(this).apply { addView(content) }
+        return AlertDialog.Builder(this).setTitle("設定與更新").setView(scroll)
+            .setPositiveButton("完成", null).create()
     }
-
     override fun onResume() {
         super.onResume()
         summaryActive = true
@@ -349,7 +378,10 @@ class MainActivity : Activity() {
             runOnUiThread {
                 if (!summaryActive || generation != summaryGeneration) return@runOnUiThread
                 result.onSuccess { (steps, travel) ->
-                    todaySteps.text = "${wholeNumber.format(steps)} 步"
+                    todaySteps.text = wholeNumber.format(steps)
+                    val goal = getSharedPreferences("activity_goals", MODE_PRIVATE).getLong("dailySteps", 8000).coerceAtLeast(1)
+                    goalProgress.progress = ((steps.toDouble() / goal).coerceIn(0.0, 1.0) * goalProgress.max).toInt()
+                    goalText.text = "每日目標 ${wholeNumber.format(goal)} 步"
                     todayTravel.text = formatTravelDuration(travel.totalMs)
                     averageSpeed.text = if (travel.totalMs > 0) "約 ${decimalNumber.format(currentSpeeds.averageKph(travel))} km/h" else "—"
                     todayDistance.text = formatDistance(currentSpeeds.kilometers(travel), decimalNumber)
@@ -359,7 +391,7 @@ class MainActivity : Activity() {
     }
 
     private fun renderSteps(state: StepService.Status) {
-        sessionSteps.text = "${wholeNumber.format(state.steps)} 步"
+        sessionSteps.text = "本次計步 ${wholeNumber.format(state.steps)} 步"
         status.text = when {
             !hasCounter && !hasDetector -> "此裝置沒有系統計步感測器。"
             !hasMotionPermission(this) -> "需要身體活動權限才能計步。"
@@ -381,6 +413,7 @@ class MainActivity : Activity() {
         installUpdate.visibility = if (latest != null) View.VISIBLE else View.GONE
         send.isEnabled = !busy
         export.isEnabled = !busy
+        disconnect.visibility = if (sync.hasDevice) View.VISIBLE else View.GONE
         disconnect.isEnabled = !busy && sync.hasDevice
     }
 
@@ -421,6 +454,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        controlsDialog.dismiss()
         summaryWorker.shutdown()
         worker.shutdown()
         super.onDestroy()

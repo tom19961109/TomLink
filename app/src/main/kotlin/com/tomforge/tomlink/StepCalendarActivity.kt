@@ -2,28 +2,24 @@ package com.tomforge.tomlink
 
 import android.app.Activity
 import android.app.AlertDialog
-import android.graphics.Color
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.text.InputType
-import android.util.TypedValue
+import androidx.core.view.ViewCompat
 import android.view.Gravity
 import android.view.View
-import android.view.WindowInsets
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import java.text.NumberFormat
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.ZoneId
 import java.util.concurrent.Executors
+
+private val WEEKDAYS = listOf("一", "二", "三", "四", "五", "六", "日")
 
 class StepCalendarActivity : Activity() {
     private val worker = Executors.newSingleThreadExecutor()
@@ -54,71 +50,61 @@ class StepCalendarActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         savedInstanceState?.getString("month")?.let { month = YearMonth.parse(it) }
-        val page = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val scroll = ScrollView(this).apply {
-            isFillViewport = true
-            addView(page)
-        }
-        page.setPadding(dp(12), dp(12), dp(12), dp(20))
-        scroll.setOnApplyWindowInsetsListener { _, insets ->
-            if (Build.VERSION.SDK_INT >= 30) {
-                val bars = insets.getInsets(WindowInsets.Type.systemBars())
-                page.setPadding(dp(12) + bars.left, dp(12) + bars.top, dp(12) + bars.right, dp(20) + bars.bottom)
-            }
-            insets
-        }
-
-        page.addView(Button(this).apply {
-            text = "返回 TomLink"
-            setOnClickListener { finish() }
-        }, LinearLayout.LayoutParams(-2, -2))
-        page.addView(label(if (weekly) "活動週曆" else "活動月曆", 26, true).apply {
-            setPadding(dp(4), dp(12), dp(4), dp(10))
-        })
-
-        if (!weekly) {
-            goalLabel = label("", 13)
-            page.addView(row().apply {
-                gravity = Gravity.CENTER_VERTICAL
-                addView(goalLabel, weighted())
-                addView(Button(this@StepCalendarActivity).apply {
-                    text = "設定步數目標"
-                    setOnClickListener { editGoal() }
-                })
-            })
-            showGoal()
-        }
-
-        speedLabel = label("", 13)
-        page.addView(row().apply {
+        val page = column()
+        val back = action("‹") { finish() }.apply { contentDescription = "返回首頁"; textSize = 24f }
+        val title = label(if (weekly) "活動週曆" else "活動月曆", 25, true)
+        ViewCompat.setAccessibilityHeading(title, true)
+        page.block(LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
-            addView(speedLabel, weighted())
-            addView(Button(this@StepCalendarActivity).apply {
-                text = "設定估算時速"
-                setOnClickListener { editTravelSpeeds() }
-            })
+            addView(back, LinearLayout.LayoutParams(dp(48), -2))
+            addView(title, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(8) })
+            addView(action("設定") { openCalendarSettings() })
         })
-        showTravelSpeeds()
-        monthLabel = label("", 18, true).apply { gravity = Gravity.CENTER }
+        monthLabel = label("", 17, true).apply { gravity = Gravity.CENTER }
         nextMonth = monthButton("›", "下個月") { changeMonth(1) }
-        page.addView(row().apply {
+        page.block(LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(12), 0, dp(4))
             if (!weekly) addView(monthButton("‹", "上個月") { changeMonth(-1) }, LinearLayout.LayoutParams(dp(48), dp(48)))
-            addView(monthLabel, weighted())
+            addView(monthLabel, LinearLayout.LayoutParams(0, -2, 1f))
             if (!weekly) addView(nextMonth, LinearLayout.LayoutParams(dp(48), dp(48)))
-        })
-
-        calendar = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        page.addView(calendar)
-        status = label("", 13).apply { setPadding(dp(4), dp(8), dp(4), 0) }
-        page.addView(status)
-        page.addView(label(if (weekly) "點日期查看明細。公里數依交通移動時間與設定時速估算。" else "綠色已達標，紅色未達標。點日期查看活動明細。", 13).apply {
-            setPadding(dp(4), dp(10), dp(4), 0)
-        })
-        setContentView(scroll)
+        }, 12)
+        calendar = column()
+        if (weekly) page.block(calendar, 9)
+        else page.block(card().apply {
+            setPadding(dp(6), dp(8), dp(6), dp(8))
+            block(calendar)
+        }, 9)
+        status = label("", 14, ink = LinkColors.muted).apply { accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
+        page.block(status, 6)
+        if (!weekly) {
+            page.block(LinearLayout(this).apply {
+                gravity = Gravity.CENTER
+                fun marker(text: String, color: Int, ink: Int) {
+                    addView(label(text, 13, ink = ink).apply {
+                        background = panel(color, 12)
+                        setPadding(dp(8), dp(3), dp(8), dp(3))
+                    }, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(6) })
+                }
+                marker("已達標", LinkColors.mint, LinkColors.accent)
+                marker("未達標", LinkColors.rose, LinkColors.roseInk)
+            }, 6)
+        }
+        setContentView(pageScroll(page))
     }
 
+    private fun openCalendarSettings() {
+        val content = column().apply { setPadding(dp(22), dp(4), dp(22), dp(8)) }
+        goalLabel = label("", 14, ink = LinkColors.muted)
+        content.block(goalLabel)
+        showGoal()
+        content.block(action("設定步數目標") { editGoal() }, 6)
+        speedLabel = label("", 14, ink = LinkColors.muted)
+        content.block(speedLabel, 16)
+        showTravelSpeeds()
+        content.block(action("設定估算時速") { editTravelSpeeds() }, 6)
+        AlertDialog.Builder(this).setTitle("活動紀錄設定").setView(content)
+            .setPositiveButton("完成", null).show()
+    }
     override fun onResume() {
         super.onResume()
         load()
@@ -188,50 +174,91 @@ class StepCalendarActivity : Activity() {
 
     private fun render(selected: YearMonth, today: LocalDate, snapshot: Snapshot) {
         calendar.removeAllViews()
+        if (weekly) {
+            renderWeek(today, snapshot)
+            return
+        }
         val currentSpeeds = speeds
-        calendar.addView(row().apply {
-            for (title in listOf("一", "二", "三", "四", "五", "六", "日")) {
-                addView(label(title, 13, true).apply { gravity = Gravity.CENTER }, weighted(dp(30)))
+        calendar.block(LinearLayout(this).apply {
+            for (title in WEEKDAYS) {
+                addView(label(title, 13, true, LinkColors.muted).apply { gravity = Gravity.CENTER },
+                    LinearLayout.LayoutParams(0, dp(32), 1f))
             }
         })
         for (week in snapshot.days.chunked(7)) {
-            calendar.addView(row().apply {
+            calendar.block(LinearLayout(this).apply {
                 for (day in week) {
                     val count = snapshot.totals.getValue(day)
                     val travel = snapshot.transport[day] ?: TravelDuration()
-                    val km = currentSpeeds.kilometers(travel)
                     val future = day > today
                     val inMonth = YearMonth.from(day) == selected
+                    val eligible = inMonth && !future
                     val fill = when {
-                        weekly && day == today -> GREEN_TINT
-                        weekly -> PAPER
-                        !inMonth || future -> MUTED_PAPER
-                        count >= goal -> GREEN_TINT
-                        else -> RED_TINT
+                        !eligible -> LinkColors.soft
+                        count >= goal -> LinkColors.mint
+                        else -> LinkColors.rose
                     }
-                    val ink = if (!weekly && (!inMonth || future)) MUTED_INK else INK
-                    val state = if (weekly || !inMonth || future) "" else if (count >= goal) "，已達標" else "，未達標"
-                    val steps = if (weekly && !future) number.format(count) else if (weekly) "—" else null
-                    addView(cell(day.dayOfMonth.toString(), steps, fill, ink).apply {
-                        if (weekly) addView(compactValue(if (future) "—" else formatDistance(km, distance), ink))
-                        contentDescription = "${day.monthValue} 月 ${day.dayOfMonth} 日$state" +
-                            if (weekly && !future) "，${number.format(count)} 步，${formatDistance(km, distance)}" else ""
-                        isSelected = day == today
-                        if (!future) setOnClickListener { showDayDetails(day, count, travel) }
-                    }, cellParams())
+                    val ink = when {
+                        !eligible -> LinkColors.muted
+                        count >= goal -> LinkColors.accent
+                        else -> LinkColors.roseInk
+                    }
+                    val outline = LinkColors.accent.takeIf { day == today }
+                    val tile = label(day.dayOfMonth.toString(), 15, day == today, ink).apply {
+                        gravity = Gravity.CENTER
+                        background = if (future) panel(fill, 10, outline) else pressable(fill, 10, outline)
+                        contentDescription = "${day.monthValue} 月 ${day.dayOfMonth} 日" +
+                            (if (day == today) "，今天" else "") +
+                            if (future) "，未來日期" else "，${number.format(count)} 步，${formatDistance(currentSpeeds.kilometers(travel), distance)}" +
+                                if (!eligible) "" else if (count >= goal) "，已達標" else "，未達標"
+                        if (!future) {
+                            isFocusable = true
+                            setOnClickListener { showDayDetails(day, count, travel) }
+                        }
+                    }
+                    addView(tile, LinearLayout.LayoutParams(0, dp(48), 1f).apply { setMargins(dp(1), 0, dp(1), dp(3)) })
                 }
             })
         }
-        if (weekly) {
-            val steps = snapshot.totals.values.sum()
-            val km = snapshot.transport.values.sumOf { currentSpeeds.kilometers(it) }
-            calendar.addView(label("本週總和　${number.format(steps)} 步 · ${formatDistance(km, distance)}", 17, true).apply {
-                setPadding(dp(10), dp(10), dp(10), dp(10))
-                background = tile(GREEN_TINT)
-            }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
-        }
     }
 
+    private fun renderWeek(today: LocalDate, snapshot: Snapshot) {
+        val currentSpeeds = speeds
+        val steps = snapshot.totals.values.sum()
+        val km = snapshot.transport.values.sumOf { currentSpeeds.kilometers(it) }
+        calendar.block(card(LinkColors.mint).apply {
+            block(label("本週總計", 14, true, LinkColors.accent))
+            block(label("${number.format(steps)} 步", 28, true), 3)
+            block(label("估算距離 ${formatDistance(km, distance)}", 14, ink = LinkColors.muted), 3)
+        })
+        snapshot.days.forEachIndexed { index, day ->
+            val count = snapshot.totals.getValue(day)
+            val travel = snapshot.transport[day] ?: TravelDuration()
+            val future = day > today
+            val date = "${day.monthValue}/${day.dayOfMonth}（${WEEKDAYS[index]}）"
+            val stepText = if (future) "—" else "${number.format(count)} 步"
+            val distanceText = if (future) "—" else formatDistance(currentSpeeds.kilometers(travel), distance)
+            calendar.block(LinearLayout(this).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(12), dp(9), dp(12), dp(9))
+                minimumHeight = dp(48)
+                val fill = if (day == today) LinkColors.mint else LinkColors.surface
+                background = if (future) panel(fill, 12) else pressable(fill, 12)
+                addView(label(if (day == today) "今天 $date" else date, 14, day == today),
+                    LinearLayout.LayoutParams(0, -2, 1f))
+                addView(column().apply {
+                    gravity = Gravity.END
+                    block(label(stepText, 14, !future))
+                    block(label(distanceText, 12, ink = LinkColors.muted))
+                })
+                if (!future) {
+                    isFocusable = true
+                    setOnClickListener { showDayDetails(day, count, travel) }
+                }
+                contentDescription = "$date，$stepText，$distanceText"
+            }, 5)
+        }
+    }
     private fun showGoal() {
         goalLabel.text = "每日目標 ${number.format(goal)} 步"
     }
@@ -274,9 +301,14 @@ class StepCalendarActivity : Activity() {
         ).filter { it.second > 0 }.joinToString("\n") { (mode, ms, kph) ->
             "$mode　${formatTravelDuration(ms)} · $kph km/h · ${formatDistance(estimatedKm(ms, kph), distance)}"
         }
-        val summary = "步數　${number.format(steps)} 步\n行車總距離　${formatDistance(current.kilometers(travel), distance)}"
+        val summary = column().apply {
+            setPadding(dp(22), dp(4), dp(22), dp(8))
+            block(label("${number.format(steps)} 步", 28, true))
+            block(label("估算距離 ${formatDistance(current.kilometers(travel), distance)}", 16, ink = LinkColors.muted), 6)
+            if (details.isNotEmpty()) block(label(details, 14, ink = LinkColors.muted), 12)
+        }
         AlertDialog.Builder(this).setTitle(day.toString())
-            .setMessage(if (details.isEmpty()) summary else "$summary\n\n$details")
+            .setView(summary)
             .setPositiveButton("關閉", null).show()
     }
 
@@ -318,62 +350,13 @@ class StepCalendarActivity : Activity() {
         }
     }
 
-    private fun cell(top: String, bottom: String?, fill: Int, ink: Int) =
-        LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setPadding(dp(1), dp(2), dp(1), dp(2))
-            background = tile(fill)
-            addView(label(top, 12, true).apply {
-                gravity = Gravity.CENTER
-                setTextColor(ink)
-            }, LinearLayout.LayoutParams(-1, dp(20)))
-            if (bottom != null) addView(compactValue(bottom, ink))
-            importantForAccessibility = android.view.View.IMPORTANT_FOR_ACCESSIBILITY_YES
-        }
-
-    private fun compactValue(text: String, ink: Int) = label(text, 12, true).apply {
-        gravity = Gravity.CENTER
-        setTextColor(ink)
-        maxLines = 1
-        setAutoSizeTextTypeUniformWithConfiguration(8, 12, 1, TypedValue.COMPLEX_UNIT_SP)
-        layoutParams = LinearLayout.LayoutParams(-1, dp(22))
-    }
-
-    private fun row() = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-    private fun weighted(height: Int = -2, weight: Float = 1f) = LinearLayout.LayoutParams(0, height, weight)
-    private fun cellParams() = weighted(dp(if (weekly) 72 else 47)).apply { setMargins(dp(1), dp(1), dp(1), dp(1)) }
-
-    private fun monthButton(symbol: String, description: String, action: () -> Unit) = Button(this).apply {
-        text = symbol
+    private fun monthButton(symbol: String, description: String, go: () -> Unit) = action(symbol, click = go).apply {
         textSize = 25f
         contentDescription = description
-        minWidth = 0
         setPadding(0, 0, 0, 0)
-        setOnClickListener { action() }
     }
-
-    private fun label(value: String, size: Int, bold: Boolean = false) = TextView(this).apply {
-        text = value
-        textSize = size.toFloat()
-        setTextColor(INK)
-        if (bold) setTypeface(typeface, Typeface.BOLD)
-    }
-
-    private fun tile(fill: Int) = GradientDrawable().apply {
-        setColor(fill)
-        cornerRadius = dp(5).toFloat()
-    }
-
-    private fun dp(value: Int) = (value * resources.displayMetrics.density + .5f).toInt()
 
     companion object {
         internal const val EXTRA_WEEK = "show_week"
-        val INK = Color.rgb(36, 54, 43)
-        val MUTED_INK = Color.rgb(97, 110, 102)
-        val PAPER = Color.rgb(245, 246, 242)
-        val MUTED_PAPER = Color.rgb(239, 240, 237)
-        val RED_TINT = Color.rgb(250, 223, 218)
-        val GREEN_TINT = Color.rgb(222, 236, 225)
     }
 }
